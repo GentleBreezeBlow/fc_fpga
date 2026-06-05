@@ -1,0 +1,14 @@
+// ============================================================
+// SoC RTL Filelist — source for fpga filelist generation
+// ============================================================
+$SOC_DESIGN_DIR/cpu_core/rtl_v/cpu_core.sv
+$SOC_DESIGN_DIR/uart/rtl_v/uart_top.sv
+$SOC_DESIGN_DIR/spi_controller/rtl_v/spi_ctrl.sv
+$SOC_DESIGN_DIR/gpio/rtl_v/gpio.sv
+$COMMON_IP_DIR/dip_sce/rtl_v/dip_sce_top.sv
+$MEMORY_DIR/tsmc_lib/sram_cell.v
+$LIBRARY_DIR/gf22_lib/stdcell.v
+// This is a comment — should be stripped
++incdir+$COMMON_IP_DIR/dip_sce/rtl_v
++incdir+$CPPE_CPUSYSTEM_DIR/CORTEX4/rtl_v
+/aip_random_noise.sv

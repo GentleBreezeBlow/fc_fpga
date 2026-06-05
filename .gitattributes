@@ -1,0 +1,17 @@
+# Auto-detect text files, normalize line endings to LF on commit
+* text=auto
+
+# Python: always LF
+*.py text eol=lf
+
+# Verilog / SystemVerilog: always LF
+*.v text eol=lf
+*.sv text eol=lf
+*.vh text eol=lf
+*.xdc text eol=lf
+
+# Shell scripts: always LF
+*.sh text eol=lf
+
+# Markdown: always LF
+*.md text eol=lf

@@ -1,0 +1,32 @@
+# Generated outputs (script creates these at runtime)
+filelist.f
+reports/
+fpga_memory_output/
+bcompare_script.txt
+bcompare_log.txt
+*.f
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# IDE / editor
+.vs/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS junk
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Environment-specific (path depends on machine)
+.env
