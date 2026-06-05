@@ -70,9 +70,9 @@ RE_PORT = re.compile(
 MEM_PORT_PATTERNS: dict[str, re.Pattern] = {
     "addr": re.compile(r"^(a|A)_"),
     "data": re.compile(r"^(d|D)_"),
-    "wen":  re.compile(r"(wen|WEN)_"),
+    "gwen": re.compile(r"(gwen|GWEN)_"),   # must precede "wen" — gwen contains "wen"
+    "wen":  re.compile(r"(?<!g)(wen|WEN)_"),
     "wem":  re.compile(r"(wem|WEM)_"),
-    "gwen": re.compile(r"(gwen|GWEN)_"),
     "me":   re.compile(r"(me|ME)_"),
     "we":   re.compile(r"(we|WE)_"),
     "clk":  re.compile(r"(clk|CLK)_"),

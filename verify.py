@@ -301,23 +301,25 @@ def run():
           "spi_ctrl: FPGA block (ODDR) preserved")
 
     # ---- Step 5: Memory ----
-    banner("STEP 5: Run memory replacement")
-    from fpga_core.memory import generate_fpga_memory_file
+    banner("STEP 5: Generate FPGA memory wrappers (mbist_wrap/fpga_v)")
+    from fpga_core.memory import generate_fpga_wrapper
 
-    mem_out = HERE / "fpga_memory_output"
-    if mem_out.exists():
+    mbist_fpga = HERE / "test_soc/design/mbist_wrap/fpga_v"
+    if mbist_fpga.exists():
         import shutil
-        shutil.rmtree(mem_out)
-    mem_out.mkdir()
+        shutil.rmtree(mbist_fpga)
+    mbist_fpga.mkdir(parents=True)
 
     for w in memory_wrappers:
-        out = generate_fpga_memory_file(w, mem_out)
+        out = generate_fpga_wrapper(w, mbist_fpga)
         if out:
             print(f"  [OK] {out.name}")
             c = _read(out)
             check("fpga_spram" in c, f"    {out.name}: contains fpga_spram")
             check("MEMDEPTH" in c and "MEMWIDTH" in c,
                   f"    {out.name}: has MEMDEPTH+MEMWIDTH params")
+            # Verify the wrapper is a complete module
+            check("endmodule" in c, f"    {out.name}: is a complete module")
 
     # ---- Step 6: Filelist ----
     banner("STEP 6: Run filelist generation")
@@ -381,7 +383,7 @@ def run():
     print(f"""
   Output files:
     {fl_path}
-    {mem_out}/
+    {mbist_fpga}/
     {report_dir}/all.html
 
   Open report:  start {report_dir / 'all.html'}

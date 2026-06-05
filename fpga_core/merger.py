@@ -82,42 +82,92 @@ class FileMerger:
         """Run the full diff-and-merge pipeline for one file pair.
 
         1. Read both files.
-        2. Extract FPGA_SYN blocks from *fpga_path*.
-        3. Diff the clean (non-FPGA-only) content against *rtl_path*.
-        4. If they differ, apply RTL changes while preserving FPGA blocks.
-        5. Write back the merged result.
+        2. Extract FPGA_SYN blocks from **both** files (stripped RTL → clean
+           RTL; stripped FPGA → clean FPGA).
+        3. Diff the two clean (ASIC-only) views.
+        4. Apply ASIC changes while preserving FPGA blocks.
+        5. Merge RTL-originated blocks into the FPGA block set so that
+           `` `ifdef FPGA_SYN `` blocks present in the RTL source are not
+           duplicated on subsequent syncs.
+        6. Write back the merged result.
 
         Returns a :class:`MergeResult`.
         """
         rtl_lines = read_lines(rtl_path)
         fpga_lines = read_lines(fpga_path)
 
-        # Strip whitespace for comparison (but keep originals for output)
-        rtl_stripped = [ln.rstrip() for ln in rtl_lines]
+        # --- 1. Extract FPGA blocks from BOTH files -----------------------
+        clean_fpga_lines, fpga_blocks = self.extractor.extract(fpga_lines)
+        clean_rtl_lines, rtl_blocks   = self.extractor.extract(rtl_lines)
 
-        # Extract FPGA blocks → clean lines (FPGA-only code removed)
-        clean_lines, blocks = self.extractor.extract(fpga_lines)
-        fpga_stripped = [ln.rstrip() for ln in clean_lines]
+        # Stripped versions for difflib (compare without trailing whitespace)
+        fpga_stripped = [ln.rstrip() for ln in clean_fpga_lines]
+        rtl_stripped  = [ln.rstrip() for ln in clean_rtl_lines]
 
-        # Diff
+        # --- 2. Diff the two clean (ASIC-only) views ----------------------
         matcher = difflib.SequenceMatcher(None, rtl_stripped, fpga_stripped)
         opcodes = matcher.get_opcodes()
 
-        if len(opcodes) == 1 and opcodes[0][0] == "equal":
-            # Files are identical after stripping FPGA blocks
+        # Check whether clean content is already identical AND
+        # the RTL introduces no new FPGA blocks that the FPGA doesn't have.
+        has_new_rtl_blocks = any(
+            bid for bid in rtl_blocks
+            if bid not in fpga_blocks  # naive check; refined below
+        )
+        if len(opcodes) == 1 and opcodes[0][0] == "equal" and not has_new_rtl_blocks:
             logger.debug("FPGA file already in sync: %s", fpga_path)
             return MergeResult(fpga_file=fpga_path, rtl_file=rtl_path, is_equal=True)
 
-        # --- Files differ → apply merge ---
+        # Also run the refined overlap check (uses position mapping)
+        rtl_blocks_mapped = self._map_rtl_blocks_to_merged(
+            rtl_blocks, clean_rtl_lines, opcodes, fpga_blocks
+        )
+        new_rtl_blocks = {
+            bid: b for bid, b in rtl_blocks_mapped.items()
+            if bid not in fpga_blocks
+        }
+        if len(opcodes) == 1 and opcodes[0][0] == "equal" and not new_rtl_blocks:
+            logger.debug("FPGA file already in sync (incl. blocks): %s", fpga_path)
+            return MergeResult(fpga_file=fpga_path, rtl_file=rtl_path, is_equal=True)
+
+        # --- 3. Files differ → apply merge --------------------------------
         logger.info("Syncing: %s ← %s", fpga_path.name, rtl_path.name)
 
-        # Apply diff opcodes to clean_lines
-        merged_clean, block_warnings = self._apply_diff(
-            clean_lines, rtl_lines, rtl_stripped, fpga_stripped, opcodes, blocks
+        # Map rtl_blocks to clean_fpga space BEFORE merge shifts
+        rtl_blocks_in_fpga = self._map_rtl_blocks_to_merged(
+            rtl_blocks, clean_rtl_lines, opcodes, fpga_blocks,
         )
 
-        # Reinsert FPGA blocks (using updated RTL content)
-        final_lines = self.extractor.reinsert(merged_clean, blocks)
+        # Apply diff opcodes to clean_fpga_lines, producing merged_clean.
+        # fpga_blocks have their positions shifted inside _apply_diff.
+        merged_clean, block_warnings = self._apply_diff(
+            clean_fpga_lines, clean_rtl_lines, rtl_stripped, fpga_stripped,
+            opcodes, fpga_blocks,
+        )
+
+        # Also shift rtl_blocks_in_fpga using the same opcodes
+        self._apply_position_shifts(rtl_blocks_in_fpga, opcodes)
+
+        # --- 4. Merge RTL blocks into the FPGA block set -------------------
+        combined_blocks = dict(fpga_blocks)
+        next_id = max(fpga_blocks.keys(), default=-1) + 1
+        for bid, rtl_block in rtl_blocks_in_fpga.items():
+            # Does this RTL block overlap an existing FPGA block?
+            overlaps = self._find_overlapping_block(
+                rtl_block, fpga_blocks,
+            )
+            if overlaps is not None:
+                # Already covered — update positions in case lines shifted
+                fpga_blocks[overlaps].clean_start = rtl_block.clean_start
+                fpga_blocks[overlaps].clean_end   = rtl_block.clean_end
+            else:
+                # New block from RTL — assign a fresh ID
+                rtl_block.block_id = next_id
+                combined_blocks[next_id] = rtl_block
+                next_id += 1
+
+        # --- 5. Reinsert all blocks ----------------------------------------
+        final_lines = self.extractor.reinsert(merged_clean, combined_blocks)
 
         write_lines(fpga_path, final_lines)
 
@@ -135,14 +185,18 @@ class FileMerger:
 
     def _apply_diff(
         self,
-        clean_lines: list[str],
-        rtl_lines: list[str],
+        clean_fpga_lines: list[str],
+        clean_rtl_lines: list[str],
         rtl_stripped: list[str],
         fpga_stripped: list[str],
         opcodes: list[tuple[str, int, int, int, int]],
         blocks: dict[int, FPGABlock],
     ) -> tuple[list[str], list[int]]:
-        """Apply diff *opcodes* to produce merged clean lines.
+        """Apply diff *opcodes* to produce merged clean (ASIC-only) lines.
+
+        Both *clean_fpga_lines* and *clean_rtl_lines* are FPGA-block-free
+        (their `` `ifdef FPGA_SYN `` blocks have been extracted).  The diff
+        therefore only reflects genuine ASIC-level changes.
 
         Returns ``(merged_clean, block_warnings)`` where *block_warnings* lists
         block IDs whose RTL-visible region was affected by the merge.
@@ -156,22 +210,22 @@ class FileMerger:
 
         for tag, a1, a2, b1, b2 in opcodes:
             if tag == "equal":
-                # Keep existing FPGA clean lines
-                merged.extend(clean_lines[b1:b2])
+                # Keep existing FPGA clean lines (identical to RTL)
+                merged.extend(clean_fpga_lines[b1:b2])
 
             elif tag == "replace":
-                # Replace FPGA clean segment with RTL lines
+                # Replace FPGA clean segment with RTL clean segment
                 self._check_block_overlap(
                     b1, b2, a2 - a1, tag, blocks, block_positions, block_warnings
                 )
                 self._shift_block_positions(
                     block_positions, b1, b2, a2 - a1
                 )
-                merged.extend(rtl_lines[a1:a2])
+                merged.extend(clean_rtl_lines[a1:a2])
 
             elif tag == "delete":
                 # difflib 'delete': RTL has lines FPGA doesn't.
-                # To apply RTL → FPGA: INSERT RTL[a1:a2] at FPGA position b1.
+                # To apply RTL → FPGA: INSERT clean_rtl[a1:a2] at FPGA pos b1.
                 new_len = a2 - a1
                 self._check_block_overlap(
                     b1, b1, new_len, tag, blocks, block_positions, block_warnings
@@ -179,15 +233,15 @@ class FileMerger:
                 self._shift_block_positions(
                     block_positions, b1, b1, new_len
                 )
-                merged.extend(rtl_lines[a1:a2])
+                merged.extend(clean_rtl_lines[a1:a2])
 
             elif tag == "insert":
                 # difflib 'insert': FPGA has lines RTL doesn't.
-                # To apply RTL → FPGA: KEEP FPGA[b1:b2].
+                # To apply RTL → FPGA: KEEP clean_fpga[b1:b2].
                 self._check_block_overlap(
                     b1, b2, b2 - b1, tag, blocks, block_positions, block_warnings
                 )
-                merged.extend(clean_lines[b1:b2])
+                merged.extend(clean_fpga_lines[b1:b2])
 
         # Update block positions for reinsertion
         for bid, (new_start, new_end) in block_positions.items():
@@ -242,6 +296,121 @@ class FileMerger:
             elif bs < b2 and be > b1:
                 # Block overlaps the changed region — extend/contract
                 positions[bid] = [bs, be + delta]
+
+    # ------------------------------------------------------------------
+    # RTL-block merging helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _map_rtl_pos_to_fpga(
+        rtl_pos: int,
+        opcodes: list[tuple[str, int, int, int, int]],
+    ) -> int:
+        """Map a single line index from clean-RTL space to clean-FPGA space.
+
+        Uses the difflib opcodes between clean_rtl (A) and clean_fpga (B).
+        """
+        for tag, a1, a2, b1, b2 in opcodes:
+            if a1 <= rtl_pos < a2:
+                if tag == "equal":
+                    return b1 + (rtl_pos - a1)
+                elif tag == "replace":
+                    if b1 < b2:
+                        return b1 + min(rtl_pos - a1, b2 - b1 - 1)
+                    else:
+                        return b1
+                elif tag == "delete":
+                    return b1
+        # Fallback: position not covered by any opcode → return as-is
+        return rtl_pos
+
+    @staticmethod
+    def _map_rtl_blocks_to_merged(
+        rtl_blocks: dict[int, FPGABlock],
+        clean_rtl_lines: list[str],
+        opcodes: list[tuple[str, int, int, int, int]],
+        fpga_blocks: dict[int, FPGABlock],
+    ) -> dict[int, FPGABlock]:
+        """Map *rtl_blocks*' position from clean-RTL space to clean-FPGA space.
+
+        Returns a new dict with updated ``clean_start``/``clean_end`` that are
+        directly comparable to the positions in *fpga_blocks* (before any merge
+        shifts are applied).
+
+        .. note::
+
+           This produces positions in **clean-FPGA** space — the same space
+           occupied by *fpga_blocks* immediately after extraction.  The caller
+           must apply any additional shifts that happen during
+           :meth:`_apply_diff`.
+        """
+        mapped: dict[int, FPGABlock] = {}
+        for bid, block in rtl_blocks.items():
+            if block.rtl_visible_count == 0:
+                continue  # pure-FPGA block (no rtl_visible) — can't map
+            new_start = FileMerger._map_rtl_pos_to_fpga(
+                block.clean_start, opcodes,
+            )
+            new_end = FileMerger._map_rtl_pos_to_fpga(
+                block.clean_end - 1, opcodes,  # last line of rtl_visible
+            ) + 1
+            import copy
+            b2 = copy.copy(block)
+            b2.clean_start = new_start
+            b2.clean_end = new_end
+            mapped[bid] = b2
+        return mapped
+
+    @staticmethod
+    def _find_overlapping_block(
+        rtl_block: FPGABlock,
+        fpga_blocks: dict[int, FPGABlock],
+    ) -> int | None:
+        """Return the block_id of an fpga_block whose rtl_visible region overlaps
+        *rtl_block*'s rtl_visible region, or ``None``.
+
+        Two blocks are considered "the same" when their rtl_visible regions
+        are at the same position (± 3 lines tolerance for comment shifts).
+        """
+        TOLERANCE = 3
+        rs, re = rtl_block.clean_start, rtl_block.clean_end
+        for bid, fb in fpga_blocks.items():
+            fs, fe = fb.clean_start, fb.clean_end
+            if fb.rtl_visible_count == 0:
+                continue
+            # Check for position overlap with tolerance
+            if rs < fe + TOLERANCE and re > fs - TOLERANCE:
+                return bid
+        return None
+
+    @staticmethod
+    def _apply_position_shifts(
+        blocks: dict[int, FPGABlock],
+        opcodes: list[tuple[str, int, int, int, int]],
+    ) -> None:
+        """Shift *blocks*' ``clean_start``/``clean_end`` by the same deltas
+        that :meth:`_apply_diff` applies — bringing blocks mapped to
+        clean-FPGA space into merged-clean space.
+
+        Only ``replace`` and ``delete`` opcodes cause shifts (``equal`` and
+        ``insert`` keep lengths unchanged).
+        """
+        if not blocks:
+            return
+        _pos = {bid: [b.clean_start, b.clean_end] for bid, b in blocks.items()}
+        for tag, a1, a2, b1, b2 in opcodes:
+            if tag == "replace":
+                old_len = b2 - b1
+                new_len = a2 - a1
+            elif tag == "delete":
+                old_len = 0
+                new_len = a2 - a1
+            else:
+                continue  # equal / insert — no length change
+            FileMerger._shift_block_positions(_pos, b1, b1 + old_len, new_len)
+        for bid, b in blocks.items():
+            if bid in _pos:
+                b.clean_start, b.clean_end = _pos[bid]
 
 
 # ---------------------------------------------------------------------------

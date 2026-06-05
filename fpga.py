@@ -28,7 +28,7 @@ from fpga_core.config import FPGAToolConfig
 from fpga_core.block_extractor import FPGABlockExtractor
 from fpga_core.scanner import DesignScanner
 from fpga_core.merger import FileMerger, check_stub_ports
-from fpga_core.memory import generate_fpga_memory_file
+from fpga_core.memory import generate_fpga_memory_file, generate_fpga_wrapper
 from fpga_core.filelist import generate_filelist
 from fpga_core.report import (
     generate_bcompare_script,
@@ -106,7 +106,12 @@ def sync_fpga_files(
 
 
 def gen_memory_files(config: FPGAToolConfig) -> list[Path]:
-    """Generate FPGA SP-RAM memory replacement files."""
+    """Generate FPGA wrapper files (mbist_wrap/fpga_v from rtl_v).
+
+    For each ``*_wrap.v`` / ``*_wrap.sv`` in ``mbist_wrap/rtl_v``, creates a
+    same-named FPGA wrapper in ``mbist_wrap/fpga_v`` with memory ports
+    connected to ``fpga_spram`` instances.
+    """
     logger = logging.getLogger(__name__)
     import os
     soc_dir = os.getenv("SOC_DESIGN_DIR", "")
@@ -114,18 +119,22 @@ def gen_memory_files(config: FPGAToolConfig) -> list[Path]:
         logger.warning("SOC_DESIGN_DIR not set — skipping memory generation")
         return []
 
-    mbist_path = Path(soc_dir) / "mbist_wrap" / "rtl_v"
+    mbist_rtl = Path(soc_dir) / "mbist_wrap" / "rtl_v"
     scanner = DesignScanner(config.design_dirs)
-    wrappers = scanner.find_memory_wrappers(mbist_path)
+    wrappers = scanner.find_memory_wrappers(mbist_rtl)
 
-    output_dir = Path("fpga_memory_output")
+    if not wrappers:
+        logger.warning("No memory wrappers found in %s", mbist_rtl)
+        return []
+
+    output_dir = Path(soc_dir) / "mbist_wrap" / "fpga_v"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     generated: list[Path] = []
     for wrapper in wrappers:
         logger.info("Processing memory wrapper: %s", wrapper.name)
         try:
-            result = generate_fpga_memory_file(wrapper, output_dir)
+            result = generate_fpga_wrapper(wrapper, output_dir)
             if result:
                 generated.append(result)
         except Exception as exc:
