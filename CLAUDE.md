@@ -1,102 +1,37 @@
 # fc_fpga — FPGA RTL Sync Tool
 
-## Project Overview
+Automates FPGA code handling in IC RTL projects: sync `rtl_v` changes to `fpga_v` while preserving `` `ifdef FPGA_SYN `` / `` `ifndef FPGA_SYN `` blocks; generate memory SP-RAM instantiations; produce FPGA synthesis filelists; diff RTL vs FPGA into HTML reports.
 
-This tool automates FPGA code handling in IC RTL projects:
-
-1. **RTL Sync**: When `rtl_v/` content changes, auto-sync to `fpga_v/` directories
-2. **FPGA_SYN Awareness**: Preserves `` `ifdef FPGA_SYN `` / `` `ifndef FPGA_SYN `` blocks during merge,
-   detects internal code changes and reports them for manual review
-3. **Diff Report**: Side-by-side HTML diff via bcompare (or Python difflib fallback)
-4. **Memory Replacement**: Parse memory wrappers, generate FPGA SP-RAM instantiations
-5. **Filelist Generation**: Generate FPGA synthesis `filelist.f` with Tcl properties
-
-## Requirements
-
-- Python >= 3.9 (standard library only, **zero pip dependencies**)
-- Optional: bcompare (Beyond Compare) for richer HTML diffs
-- Optional: GenTB module for Verilog port parsing (has pure-Python fallback)
+**Zero pip dependencies** — Python stdlib only (>= 3.9). Optional: bcompare (falls back to difflib.HtmlDiff), GenTB (falls back to built-in regex parser).
 
 ## Usage
-
 ```
-python fpga.py full       # Run complete workflow
-python fpga.py sync       # Sync fpga_v <- rtl_v only
-python fpga.py memory     # Generate memory replacement files
-python fpga.py filelist   # Generate filelist.f
-python fpga.py compare    # Generate diff reports
+python fpga.py full | sync | memory | filelist | compare
+python verify.py                     # end-to-end test with test_soc/
 ```
 
-## Environment Variables
-
-| Variable | Purpose |
-|---|---|
-| `SOC_DESIGN_DIR` | Root of SoC design IP directories |
-| `COMMON_IP_DIR` | Common IP directory |
-| `MEMORY_DIR` | Memory IP directory |
-| `LIBRARY_DIR` | Standard cell library directory |
-| `PLATFORM_DIR` | Platform directory |
-| `SOC_TB_DIR` | Testbench directory (contains `fpga/fpga_v/`) |
-| `DESIGN` | Project root (contains `config/top_rtl_filelist`) |
-| `CPPE_DIR`, `CPPE_CPUSYSTEM_DIR`, etc. | Platform-specific paths |
-
-## Directory Structure Convention
-
-```
-<ip_dir>/
-├── rtl_v/        # Reference RTL (source of truth)
-├── fpga_v/       # FPGA-specific version (auto-synced from rtl_v)
-├── stub_v/       # Stub replacement files
-└── bhv_v/        # Behavioral models (fallback reference)
-```
+## Env vars
+`SOC_DESIGN_DIR`, `COMMON_IP_DIR`, `MEMORY_DIR`, `LIBRARY_DIR`, `PLATFORM_DIR`, `CPPE_DIR`, `SOC_TB_DIR`, `DESIGN`, `CPPE_CPUSYSTEM_DIR`
 
 ## Architecture
-
 ```
-fpga.py                     # CLI entry point + backward-compat API
+fpga.py                        # CLI + backward-compat API
 fpga_core/
-├── __init__.py
-├── config.py               # Paths, regex, Tcl templates, FPGAToolConfig
-├── block_extractor.py      # State-machine `ifdef FPGA_SYN extraction
-├── scanner.py              # DesignScanner — unified directory traversal
-├── merger.py               # FileMerger — core diff-and-merge logic
-├── memory.py               # Memory port extraction + SP-RAM generation
-├── filelist.py             # FPGA filelist.f generation (pure Python)
-└── report.py               # bcompare/difflib HTML diff + report merging
+├── config.py                  # paths, regex, Tcl templates
+├── block_extractor.py         # state-machine `ifdef FPGA_SYN extraction
+├── scanner.py                 # DesignScanner — unified dir walk
+├── merger.py                  # FileMerger — diff + merge core
+├── memory.py                  # memory port extraction → SP-RAM gen
+├── filelist.py                # filelist.f generation (pure Python)
+└── report.py                  # bcompare / HtmlDiff report merging
 ```
 
-## Refactoring (June 2026)
-
-This was refactored from a ~550-line monolithic script. Key improvements:
-
-- **State machine** replaces fragile manual index arithmetic for FPGA block extraction
-- **Sentinel-based tracking** avoids off-by-N errors when lines shift during merge
-- **Zero `os.system()` calls**: all sed/cp/echo replaced with Python-native ops
-- **Pure-function separation**: extraction vs generation vs I/O are distinct
-- **Type hints** and **logging** throughout
-- **Zero pip dependencies**: only Python stdlib
-- **GenTB fallback**: pure-Python regex port parser when GenTB is unavailable
-- **bcompare fallback**: difflib.HtmlDiff when Beyond Compare is not installed
+## Design conventions
+- `FPGABlockExtractor`: state-machine replaces old fragile index arithmetic; blocks split into `preamble / rtl_visible / postamble`
+- `FileMerger`: extracts FPGA blocks → diffs clean content → applies RTL changes → reinserts blocks; warns if FPGA-only code changed
+- `DesignScanner`: single class for all directory traversal (was duplicated across the old script)
+- No `os.system()` calls — all sed/cp/echo replaced with Python-native ops
+- Edit `fpga.py` for CLI changes, `fpga_core/<module>.py` for logic
 
 ## Test SoC
-
-`test_soc/` contains a minimal SoC structure for verification:
-
-```
-test_soc/
-├── config/top_rtl_filelist
-├── design/
-│   ├── cpu_core/{rtl_v,fpga_v}/   # has `ifdef/`ifndef FPGA_SYN blocks
-│   ├── uart/{rtl_v,fpga_v}/       # has `ifdef FPGA_SYN block
-│   ├── spi_controller/{rtl_v,fpga_v}/ # has mixed FPGA blocks
-│   ├── gpio/rtl_v/                # plain RTL, no FPGA directory
-│   └── mbist_wrap/rtl_v/          # memory wrappers for MBIST
-├── common_ip/dip_sce/{rtl_v,stub_v}/
-└── tb/fpga/{fpga_v,constraints}/
-```
-
-Run verification:
-```
-python verify.py            # Full automated test
-python verify.py --reset-only  # Only reset fpga_v to OLD state
-```
+`test_soc/` — minimal SoC: 3 IPs with `rtl_v/fpga_v` pairs (cpu_core, uart, spi_ctrl), 1 stub IP (dip_sce), 1 plain RTL IP (gpio), 2 memory wrappers. `python verify.py` runs automated 7-step verification.
