@@ -1,5 +1,7 @@
 # fc_fpga — FPGA RTL Sync Tool
 
+> Context & history → `MEMORY.md`
+
 Automates FPGA code handling in IC RTL projects: sync `rtl_v` changes to `fpga_v` while preserving `` `ifdef FPGA_SYN `` / `` `ifndef FPGA_SYN `` blocks; generate memory SP-RAM instantiations; produce FPGA synthesis filelists; diff RTL vs FPGA into HTML reports.
 
 **Zero pip dependencies** — Python stdlib only (>= 3.9). Optional: bcompare (falls back to difflib.HtmlDiff), GenTB (falls back to built-in regex parser).
