@@ -1,4 +1,4 @@
-"""Core diff-and-merge logic — synchronises ``fpga_v`` files with ``rtl_v``.
+"""Core diff-and-merge logic -- synchronises ``fpga_v`` files with ``rtl_v``.
 
 Uses :class:`FPGABlockExtractor` to isolate FPGA_SYN blocks, diffs the
 remaining RTL code against the reference, and applies the changes while
@@ -82,8 +82,8 @@ class FileMerger:
         """Run the full diff-and-merge pipeline for one file pair.
 
         1. Read both files.
-        2. Extract FPGA_SYN blocks from **both** files (stripped RTL → clean
-           RTL; stripped FPGA → clean FPGA).
+        2. Extract FPGA_SYN blocks from **both** files (stripped RTL -> clean
+           RTL; stripped FPGA -> clean FPGA).
         3. Diff the two clean (ASIC-only) views.
         4. Apply ASIC changes while preserving FPGA blocks.
         5. Merge RTL-originated blocks into the FPGA block set so that
@@ -130,8 +130,8 @@ class FileMerger:
             logger.debug("FPGA file already in sync (incl. blocks): %s", fpga_path)
             return MergeResult(fpga_file=fpga_path, rtl_file=rtl_path, is_equal=True)
 
-        # --- 3. Files differ → apply merge --------------------------------
-        logger.info("Syncing: %s ← %s", fpga_path.name, rtl_path.name)
+        # --- 3. Files differ -> apply merge --------------------------------
+        logger.info("Syncing: %s <- %s", fpga_path.name, rtl_path.name)
 
         # Map rtl_blocks to clean_fpga space BEFORE merge shifts
         rtl_blocks_in_fpga = self._map_rtl_blocks_to_merged(
@@ -157,11 +157,11 @@ class FileMerger:
                 rtl_block, fpga_blocks,
             )
             if overlaps is not None:
-                # Already covered — update positions in case lines shifted
+                # Already covered -- update positions in case lines shifted
                 fpga_blocks[overlaps].clean_start = rtl_block.clean_start
                 fpga_blocks[overlaps].clean_end   = rtl_block.clean_end
             else:
-                # New block from RTL — assign a fresh ID
+                # New block from RTL -- assign a fresh ID
                 rtl_block.block_id = next_id
                 combined_blocks[next_id] = rtl_block
                 next_id += 1
@@ -225,7 +225,7 @@ class FileMerger:
 
             elif tag == "delete":
                 # difflib 'delete': RTL has lines FPGA doesn't.
-                # To apply RTL → FPGA: INSERT clean_rtl[a1:a2] at FPGA pos b1.
+                # To apply RTL -> FPGA: INSERT clean_rtl[a1:a2] at FPGA pos b1.
                 new_len = a2 - a1
                 self._check_block_overlap(
                     b1, b1, new_len, tag, blocks, block_positions, block_warnings
@@ -237,7 +237,7 @@ class FileMerger:
 
             elif tag == "insert":
                 # difflib 'insert': FPGA has lines RTL doesn't.
-                # To apply RTL → FPGA: KEEP clean_fpga[b1:b2].
+                # To apply RTL -> FPGA: KEEP clean_fpga[b1:b2].
                 self._check_block_overlap(
                     b1, b2, b2 - b1, tag, blocks, block_positions, block_warnings
                 )
@@ -271,7 +271,7 @@ class FileMerger:
                 if bid not in warnings:
                     warnings.append(bid)
                     logger.warning(
-                        "%sFPGA block %d RTL content modified — may need manual review%s",
+                        "%sFPGA block %d RTL content modified -- may need manual review%s",
                         YELLOW, bid, RESET,
                     )
 
@@ -289,12 +289,12 @@ class FileMerger:
 
         for bid, (bs, be) in positions.items():
             if be <= b1:
-                continue  # block entirely before change — no shift
+                continue  # block entirely before change -- no shift
             if bs >= b2:
-                # Block entirely after change — shift by delta
+                # Block entirely after change -- shift by delta
                 positions[bid] = [bs + delta, be + delta]
             elif bs < b2 and be > b1:
-                # Block overlaps the changed region — extend/contract
+                # Block overlaps the changed region -- extend/contract
                 positions[bid] = [bs, be + delta]
 
     # ------------------------------------------------------------------
@@ -321,7 +321,7 @@ class FileMerger:
                         return b1
                 elif tag == "delete":
                     return b1
-        # Fallback: position not covered by any opcode → return as-is
+        # Fallback: position not covered by any opcode -> return as-is
         return rtl_pos
 
     @staticmethod
@@ -339,7 +339,7 @@ class FileMerger:
 
         .. note::
 
-           This produces positions in **clean-FPGA** space — the same space
+           This produces positions in **clean-FPGA** space -- the same space
            occupied by *fpga_blocks* immediately after extraction.  The caller
            must apply any additional shifts that happen during
            :meth:`_apply_diff`.
@@ -347,7 +347,7 @@ class FileMerger:
         mapped: dict[int, FPGABlock] = {}
         for bid, block in rtl_blocks.items():
             if block.rtl_visible_count == 0:
-                continue  # pure-FPGA block (no rtl_visible) — can't map
+                continue  # pure-FPGA block (no rtl_visible) -- can't map
             new_start = FileMerger._map_rtl_pos_to_fpga(
                 block.clean_start, opcodes,
             )
@@ -370,7 +370,7 @@ class FileMerger:
         *rtl_block*'s rtl_visible region, or ``None``.
 
         Two blocks are considered "the same" when their rtl_visible regions
-        are at the same position (± 3 lines tolerance for comment shifts).
+        are at the same position (+/- 3 lines tolerance for comment shifts).
         """
         TOLERANCE = 3
         rs, re = rtl_block.clean_start, rtl_block.clean_end
@@ -389,7 +389,7 @@ class FileMerger:
         opcodes: list[tuple[str, int, int, int, int]],
     ) -> None:
         """Shift *blocks*' ``clean_start``/``clean_end`` by the same deltas
-        that :meth:`_apply_diff` applies — bringing blocks mapped to
+        that :meth:`_apply_diff` applies -- bringing blocks mapped to
         clean-FPGA space into merged-clean space.
 
         Only ``replace`` and ``delete`` opcodes cause shifts (``equal`` and
@@ -406,7 +406,7 @@ class FileMerger:
                 old_len = 0
                 new_len = a2 - a1
             else:
-                continue  # equal / insert — no length change
+                continue  # equal / insert -- no length change
             FileMerger._shift_block_positions(_pos, b1, b1 + old_len, new_len)
         for bid, b in blocks.items():
             if bid in _pos:
@@ -507,4 +507,143 @@ def _parse_ports_regex(lines: list[str]) -> set[str]:
             ports.add(name)
 
     return ports
+
+
+# ---------------------------------------------------------------------------
+# Stub port synchronisation
+# ---------------------------------------------------------------------------
+
+def _extract_module_header(text: str) -> tuple[str, int, int] | None:
+    """Extract the Verilog module header from ``module`` to ``);``.
+
+    Handles optional ``#(...)`` parameter list and nested parentheses
+    in port dimensions.  Returns ``(header_text, start, end)`` or ``None``
+    if no module header is found.
+    """
+    m = re.search(r"\bmodule\b", text)
+    if not m:
+        return None
+
+    start = m.start()
+    pos = m.end()
+
+    def _skip_ws() -> None:
+        nonlocal pos
+        while pos < len(text) and text[pos] in " \t\r\n":
+            pos += 1
+
+    # Skip module name (identifier after ``module`` keyword)
+    _skip_ws()
+    if pos < len(text) and (text[pos].isalpha() or text[pos] == "_"):
+        while pos < len(text) and (text[pos].isalnum() or text[pos] == "_"):
+            pos += 1
+
+    def _skip_balanced_parens() -> None:
+        """Skip past a balanced pair of parentheses starting at ``(``."""
+        nonlocal pos
+        if pos >= len(text) or text[pos] != "(":
+            return
+        depth = 1
+        pos += 1
+        while pos < len(text) and depth > 0:
+            ch = text[pos]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            pos += 1
+
+    # Optional parameter list:  #( ... )
+    _skip_ws()
+    if pos < len(text) and text[pos] == "#":
+        pos += 1
+        _skip_ws()
+        _skip_balanced_parens()
+
+    # Port list:  ( ... ) ;
+    _skip_ws()
+    if pos >= len(text) or text[pos] != "(":
+        return None
+
+    _skip_balanced_parens()
+
+    # Consume optional whitespace then the terminating semicolon
+    _skip_ws()
+    if pos < len(text) and text[pos] == ";":
+        pos += 1
+        return (text[start:pos], start, pos)
+
+    return None
+
+
+def _extract_port_names(header_text: str) -> set[str]:
+    """Return the set of port signal names declared in *header_text*."""
+    from .config import RE_PORT
+
+    cleaned = re.sub(r"//.*$", "", header_text, flags=re.MULTILINE)
+    names: set[str] = set()
+    for m in RE_PORT.finditer(cleaned):
+        name = m.group(5)
+        if name:
+            names.add(name)
+    return names
+
+
+def sync_stub_ports(
+    stub_path: Path,
+    rtl_path: Path,
+) -> bool:
+    """Synchronise a stub file's module header to match its RTL reference.
+
+    Reads the RTL file to obtain the canonical module header (module name,
+    parameters, and ports), then replaces the corresponding header in the
+    stub file.  The stub's *preamble* (comments / guards before ``module``)
+    and *body* (code after ``);``) are preserved.
+
+    Returns ``True`` if the stub was modified, ``False`` if headers already
+    matched.
+    """
+    rtl_text = rtl_path.read_text(encoding="utf-8", errors="replace")
+    stub_text = stub_path.read_text(encoding="utf-8", errors="replace")
+
+    rtl_header = _extract_module_header(rtl_text)
+    stub_header = _extract_module_header(stub_text)
+
+    if rtl_header is None:
+        logger.warning("Cannot parse module header in RTL: %s", rtl_path)
+        return False
+    if stub_header is None:
+        logger.warning("Cannot parse module header in stub: %s", stub_path)
+        return False
+
+    if rtl_header[0] == stub_header[0]:
+        return False
+
+    logger.info(
+        "Stub header sync: %s <- %s", stub_path.name, rtl_path.name,
+    )
+
+    # Replace stub header with RTL header, keep preamble + body
+    _, stub_hdr_start, stub_hdr_end = stub_header
+    new_stub = (
+        stub_text[:stub_hdr_start]
+        + rtl_header[0]
+        + stub_text[stub_hdr_end:]
+    )
+    stub_path.write_text(new_stub, encoding="utf-8")
+
+    # ---- Warn if body references ports that no longer exist -----------------
+    new_ports = _extract_port_names(rtl_header[0])
+    old_ports = _extract_port_names(stub_header[0])
+    removed_ports = old_ports - new_ports
+    if removed_ports:
+        body = stub_text[stub_hdr_end:]
+        for port in sorted(removed_ports):
+            if re.search(r"\b" + re.escape(port) + r"\b", body):
+                logger.warning(
+                    "%sSTUB BODY STALE%s [%s]: %sremoved port %s%s still referenced in body",
+                    YELLOW, RESET, stub_path.name, YELLOW, port, RESET,
+                )
+
+    return True
 

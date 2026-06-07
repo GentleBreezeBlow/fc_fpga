@@ -1,4 +1,4 @@
-"""FPGA filelist.f generation — replaces all ``os.system('sed …')`` calls
+"""FPGA filelist.f generation -- replaces all ``os.system('sed ...')`` calls
 from the original script with Python-native string / file operations.
 """
 
@@ -54,8 +54,8 @@ def generate_filelist(
     scanner = DesignScanner(design_dirs)
 
     # ---- Collect stub / fpga file info ------------------------------------
-    stub_files: dict[str, str] = {}   # basename → full path
-    fpga_files: dict[str, str] = {}   # basename → full path
+    stub_files: dict[str, str] = {}   # basename -> full path
+    fpga_files: dict[str, str] = {}   # basename -> full path
 
     for design_dir in design_dirs:
         if not design_dir.is_dir():
@@ -93,11 +93,20 @@ def generate_filelist(
                     lines = _replace_file_entry(lines, f.name, str(f))
 
     # ---- Verify fpga_v file count -----------------------------------------
+    # Collect TB fpga_v files (added to filelist in the next step)
+    tb_fpga_count = 0
+    for tb_path in tb_fpga_paths:
+        if tb_path.is_dir():
+            for f in tb_path.iterdir():
+                if f.is_file() and RE_VERILOG_EXT.search(f.suffix):
+                    tb_fpga_count += 1
+
     fpga_v_count = sum(1 for ln in lines if "fpga_v" in ln)
-    if fpga_v_count != len(fpga_files):
+    expected_count = len(fpga_files) + tb_fpga_count
+    if fpga_v_count != expected_count:
         logger.error(
-            "fpga_v count mismatch: %d in filelist vs %d expected",
-            fpga_v_count, len(fpga_files),
+            "fpga_v count mismatch: %d in filelist vs %d expected (design %d + tb %d)",
+            fpga_v_count, expected_count, len(fpga_files), tb_fpga_count,
         )
         for name in fpga_files:
             if not any(name in ln and "fpga_v" in ln for ln in lines):
@@ -167,7 +176,7 @@ def _replace_file_entry(lines: list[str], basename: str, new_path: str) -> list[
             if not found:
                 result.append(new_path)
                 found = True
-            # else: duplicate — skip
+            # else: duplicate -- skip
         else:
             result.append(ln)
     if not found:
@@ -192,7 +201,7 @@ def _build_tcl_footer(use_sce: bool) -> str:
 def _substitute_env_vars(text: str) -> str:
     """Replace absolute paths with Tcl variable references.
 
-    E.g. ``/proj/common/ip/foo → $COMMON_IP_DIR/foo``.
+    E.g. ``/proj/common/ip/foo -> $COMMON_IP_DIR/foo``.
     """
     import os
     for env_var, tcl_var in ENV_TO_FILELIST_VAR.items():

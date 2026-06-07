@@ -1,5 +1,6 @@
-// spi_ctrl.sv -- FPGA version (OLD)
-
+//===========================================================================
+// spi_ctrl.sv — SPI Master Controller (RTL reference — with bugfix)
+//===========================================================================
 module spi_ctrl #(
   parameter DATA_WIDTH = 8,
   parameter CLK_DIV    = 4
@@ -13,11 +14,16 @@ module spi_ctrl #(
   input  wire                    miso,
   output wire                    mosi,
   output wire                    sclk,
-  output wire                    cs_n
+  output wire                    cs_n,
+  input  wire                    cpol,      // NEW: clock polarity config
+  input  wire                    cpha       // NEW: clock phase config
 );
 
+  //===========================================================
+  // Clock divider — CHANGED: was CLK_DIV, now CLK_DIV/2
+  //===========================================================
   reg [7:0] clk_cnt;
-  wire clk_en = (clk_cnt == CLK_DIV - 1);
+  wire clk_en = (clk_cnt == (CLK_DIV/2) - 1);   // FIXED: was CLK_DIV-1 (wrong!)
 
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n)
@@ -28,13 +34,19 @@ module spi_ctrl #(
       clk_cnt <= clk_cnt + 1'b1;
   end
 
+  //===========================================================
+  // SPI state machine — NEW: CPOL/CPHA support
+  //===========================================================
   localparam IDLE = 2'b00, SHIFT = 2'b01, DONE = 2'b10;
+
   reg [1:0] state, next_state;
   reg [7:0] bit_cnt;
 
   always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) state <= IDLE;
-    else state <= next_state;
+    if (!rst_n)
+      state <= IDLE;
+    else
+      state <= next_state;
   end
 
   always @(*) begin
@@ -46,12 +58,14 @@ module spi_ctrl #(
     endcase
   end
 
+  // CPOL/CPHA controlled SCLK
+  assign sclk = (state == SHIFT) ? (cpol ^ (clk_cnt >= CLK_DIV/4) ? clk : ~clk) : cpol;
 `ifndef FPGA_SYN
-  assign sclk = (state == SHIFT) ? clk : 1'b0;
+
 `else
   ODDR sclk_ddr (.Q(sclk), .C(clk), .CE(1'b1), .D1(1'b1), .D2(1'b0), .R(1'b0), .S(1'b0));
 `endif
-
   assign done = (state == DONE);
   assign cs_n = (state == IDLE);
+
 endmodule

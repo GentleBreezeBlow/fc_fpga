@@ -1,4 +1,4 @@
-"""fpga_core — FPGA RTL synchronization and filelist generation tools.
+"""fpga_core -- FPGA RTL synchronization and filelist generation tools.
 
 Modules:
     config:   Configuration, path management, regex constants, Tcl templates

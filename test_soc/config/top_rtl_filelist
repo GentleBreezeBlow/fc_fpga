@@ -1,14 +1,40 @@
 // ============================================================
 // SoC RTL Filelist — source for fpga filelist generation
 // ============================================================
-$SOC_DESIGN_DIR/cpu_core/rtl_v/cpu_core.sv
-$SOC_DESIGN_DIR/uart/rtl_v/uart_top.sv
-$SOC_DESIGN_DIR/spi_controller/rtl_v/spi_ctrl.sv
-$SOC_DESIGN_DIR/gpio/rtl_v/gpio.sv
+// Top level
+$SOC_DESIGN_DIR/chip_top/rtl_v/chip_top.sv
+// IO pad
+$SOC_DESIGN_DIR/paring/rtl_v/paring.sv
+// Power domains
+$SOC_DESIGN_DIR/standby_top/rtl_v/standby_top.sv
+$SOC_DESIGN_DIR/run_top/rtl_v/run_top.sv
+// IO mux
+$SOC_DESIGN_DIR/iomux_pd0/rtl_v/iomux_pd0.sv
+$SOC_DESIGN_DIR/iomux_pd1/rtl_v/iomux_pd1.sv
+// Clock generators
+$SOC_DESIGN_DIR/cgm_pd0/rtl_v/cgm_pd0.sv
+$SOC_DESIGN_DIR/cgm_pd1/rtl_v/cgm_pd1.sv
+// Platform
+$SOC_DESIGN_DIR/platform_int/rtl_v/platform_int.sv
+// Memory wrappers (mbist)
+$SOC_DESIGN_DIR/mbist_wrap/rtl_v/sram_256x32_wrap.sv
+$SOC_DESIGN_DIR/mbist_wrap/rtl_v/rom_1024x16_wrap.sv
+$SOC_DESIGN_DIR/mbist_wrap/rtl_v/cppe_flexcan_dma_pse_wrap.sv
+// Standby domain peripherals
+$SOC_DESIGN_DIR/standby_int/rtl_v/standby_int.sv
+$SOC_DESIGN_DIR/standby_int/uart/rtl_v/uart_top.sv
+$SOC_DESIGN_DIR/standby_int/gpio/rtl_v/gpio.sv
+$SOC_DESIGN_DIR/standby_int/timer/rtl_v/timer.sv
+$SOC_DESIGN_DIR/standby_int/i2c_ctrl/rtl_v/i2c_ctrl.sv
+// Run domain peripherals
+$SOC_DESIGN_DIR/run_int/rtl_v/run_int.sv
+$SOC_DESIGN_DIR/run_int/cpu_core/rtl_v/cpu_core.sv
+$SOC_DESIGN_DIR/run_int/spi_controller/rtl_v/spi_ctrl.sv
+// Common IP
 $COMMON_IP_DIR/dip_sce/rtl_v/dip_sce_top.sv
+// Library (will be filtered out by fpga filelist generator)
 $MEMORY_DIR/tsmc_lib/sram_cell.v
 $LIBRARY_DIR/gf22_lib/stdcell.v
 // This is a comment — should be stripped
 +incdir+$COMMON_IP_DIR/dip_sce/rtl_v
 +incdir+$CPPE_CPUSYSTEM_DIR/CORTEX4/rtl_v
-/aip_random_noise.sv

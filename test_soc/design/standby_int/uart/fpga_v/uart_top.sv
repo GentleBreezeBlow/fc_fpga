@@ -19,7 +19,14 @@ module uart_top #(
 );
 
   //===========================================================
+`ifdef FPGA_SYN
+  wire pll_clk;
+  PLLE2_BASE #(
+    .CLKIN1_PERIOD (20.0), .CLKFBOUT_MULT (10), .DIVCLK_DIVIDE (2)
+  ) uart_pll (.CLKIN1(clk), .CLKOUT0(pll_clk), .LOCKED());
+`else
   // Baud-rate generator — CHANGED: was divide-by-N, now fractional
+`endif
   //===========================================================
   localparam BAUD_DIV = CLK_FREQ / BAUD_RATE;
   reg [$clog2(BAUD_DIV)-1:0] baud_cnt;
@@ -51,6 +58,8 @@ module uart_top #(
   end
   assign rts = rts_reg;
 
+
+  wire test=0;
 
 
 endmodule

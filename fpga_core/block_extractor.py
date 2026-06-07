@@ -48,11 +48,11 @@ class FPGABlock:
 
     Three-part decomposition::
 
-        ‾ifdef FPGA_SYN      ┐
-         // FPGA-only code    │  preamble  (always includes the opening directive)
-        ‾else                 ┘
-         // RTL code          →  rtl_visible  (compared against reference RTL)
-        ‾endif                →  postamble     (always includes the closing endif)
+        `ifdef FPGA_SYN      +
+         // FPGA-only code    |  preamble  (always includes the opening directive)
+        `else                 +
+         // RTL code          ->  rtl_visible  (compared against reference RTL)
+        `endif                ->  postamble     (always includes the closing endif)
 
     For blocks without ``else`` the *rtl_visible* part is empty.
     """
@@ -62,13 +62,13 @@ class FPGABlock:
 
     # Lines before the RTL-visible section (includes opening directive).
     preamble: list[str] = field(default_factory=list)
-    # Lines that are common RTL code — the part that should be diffed.
+    # Lines that are common RTL code -- the part that should be diffed.
     rtl_visible: list[str] = field(default_factory=list)
     # Lines after the RTL-visible section (includes closing endif).
     postamble: list[str] = field(default_factory=list)
 
     # Position of the rtl_visible lines in the *clean* output:
-    #   clean_lines[clean_start:clean_end]  →  rtl_visible content
+    #   clean_lines[clean_start:clean_end]  ->  rtl_visible content
     clean_start: int = 0
     clean_end: int = 0
 
@@ -126,9 +126,9 @@ class FPGABlockExtractor:
         """Scan *lines* and separate FPGA_SYN blocks from clean RTL content.
 
         Returns:
-            *clean_lines* – lines with FPGA-only code removed, RTL-visible
+            *clean_lines* -- lines with FPGA-only code removed, RTL-visible
                              code retained for diffing.
-            *blocks*       – dict mapping block_id → FPGABlock.
+            *blocks*       -- dict mapping block_id -> FPGABlock.
         """
         clean: list[str] = []
         blocks: dict[int, FPGABlock] = {}
@@ -166,7 +166,7 @@ class FPGABlockExtractor:
 
         if state is not _State.NORMAL:
             logger.warning(
-                "Unclosed FPGA_SYN block at line %d — treating rest of file as block",
+                "Unclosed FPGA_SYN block at line %d -- treating rest of file as block",
                 current.src_start + 1 if current else 0,
             )
             if current:
@@ -194,7 +194,7 @@ class FPGABlockExtractor:
             blocks:
                 Original extracted blocks (preamble/postamble preserved).
             block_positions:
-                Optional dict mapping block_id → (start, end) in
+                Optional dict mapping block_id -> (start, end) in
                 *merged_clean*.  If omitted, positions are computed from
                 the original ``clean_start``/``clean_end``, which is only
                 correct if the merge didn't shift lines.
@@ -225,7 +225,7 @@ class FPGABlockExtractor:
                 continue
 
             # The current RTL-visible content is at merged_clean[start:end]
-            # Keep newlines intact — the merger output lines already have them
+            # Keep newlines intact -- the merger output lines already have them
             updated_rtl = result[start:end]
             # If the original rtl_visible was empty, there's nothing to update
             reconstructed = block.reconstruct(updated_rtl)
@@ -243,7 +243,7 @@ class FPGABlockExtractor:
         old_blocks: dict[int, FPGABlock],
         new_lines: list[str],
     ) -> list[int]:
-        """Re-extract and compare blocks — identify FPGA code that changed.
+        """Re-extract and compare blocks -- identify FPGA code that changed.
 
         Returns block_id values whose inner FPGA-only code (preamble or
         postamble, excluding the directives themselves) was modified.
@@ -257,14 +257,14 @@ class FPGABlockExtractor:
             new = new_blocks.get(bid)
             if old is None or new is None:
                 changed.append(bid)
-                logger.warning("FPGA block %d added/removed — needs manual review", bid)
+                logger.warning("FPGA block %d added/removed -- needs manual review", bid)
                 continue
             if old.block_type is not new.block_type:
                 changed.append(bid)
                 continue
             if old.full_lines != new.full_lines:
                 changed.append(bid)
-                logger.info("FPGA block %d content changed — needs manual review", bid)
+                logger.info("FPGA block %d content changed -- needs manual review", bid)
 
         return changed
 

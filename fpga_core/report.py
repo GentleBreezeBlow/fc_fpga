@@ -1,4 +1,4 @@
-"""Diff reporting — bcompare HTML generation and report merging.
+"""Diff reporting -- bcompare HTML generation and report merging.
 
 Wraps external ``bcompare`` (Beyond Compare) for side-by-side HTML diffs
 and provides a pure-Python ``difflib.HtmlDiff`` fallback.
@@ -34,7 +34,7 @@ def generate_bcompare_script(
         script_path: Where to write the bcompare script.
 
     Returns:
-        ``(script_path, html_paths)`` — the script file and the list of
+        ``(script_path, html_paths)`` -- the script file and the list of
         expected HTML report paths.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -71,7 +71,7 @@ def run_bcompare(
     """
     exe = bcompare_exe or _find_bcompare()
     if exe is None:
-        logger.warning("bcompare not found — skipping external diff")
+        logger.warning("bcompare not found -- skipping external diff")
         return False
 
     try:
@@ -163,7 +163,7 @@ def merge_html_reports(
 </html>"""
 
     output_path.write_text(full_html, encoding="utf-8")
-    logger.info("Merged %d reports → %s", len(html_paths), output_path)
+    logger.info("Merged %d reports -> %s", len(html_paths), output_path)
     return output_path
 
 
@@ -189,15 +189,11 @@ def _find_bcompare() -> Optional[Path]:
 
 
 def _extract_module_name(fpga_path: Path) -> str:
-    """Extract a human-readable module name from an fpga_v file path."""
-    # Try to get the directory name before 'fpga_v'
-    parts = fpga_path.parts
-    try:
-        idx = list(parts).index("fpga_v")
-        if idx > 0:
-            return parts[idx - 1]
-    except ValueError:
-        pass
+    """Extract a human-readable module name from an fpga_v file path.
+
+    Uses the file stem (module name) -- always unique, avoids collisions
+    when multiple fpga_v files share a parent directory (e.g. mbist_wrap/).
+    """
     return fpga_path.stem
 
 

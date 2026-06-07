@@ -43,6 +43,12 @@ class MemoryPort:
     rdata_width: int = 1
     mem_depth: int = 2
 
+    @property
+    def byte_width(self) -> int:
+        """Number of byte-lane write-enable bits = ceil(MEMWIDTH / BYTEWIDTH)."""
+        w = max(self.rdata_width, self.wdata_width)
+        return max((w + 7) // 8, 1)  # ceil division by 8
+
     def to_spram_instantiation(self) -> str:
         """Generate a Verilog ``fpga_spram`` instantiation for this port."""
         return (
@@ -80,7 +86,7 @@ class MemoryWrapperResult:
 def extract_memory_ports(file_path: Path) -> MemoryWrapperResult:
     """Parse a memory-wrapper Verilog file and extract memory ports.
 
-    This function returns structured data — unlike the original script it
+    This function returns structured data -- unlike the original script it
     does NOT delete the results after computing them.
 
     Returns:
@@ -127,7 +133,7 @@ def generate_fpga_memory_file(
     wrapper_path: Path,
     output_dir: Path,
 ) -> Optional[Path]:
-    """Full pipeline: parse wrapper → generate SP-RAM → write output file.
+    """Full pipeline: parse wrapper -> generate SP-RAM -> write output file.
 
     Returns the path to the generated file, or ``None`` if no ports found.
     """
@@ -153,8 +159,230 @@ def generate_fpga_memory_file(
 
 
 # ---------------------------------------------------------------------------
+# ECC-split memory generation (DMA 110-bit / CAN 104-bit)
+# ---------------------------------------------------------------------------
+
+def _is_ecc_split(module_name: str, data_width: int) -> tuple[int, int, int] | None:
+    """Return ``(data_bits, ecc_count, ecc_width)`` if this block needs
+    ECC-split memory, otherwise ``None``.
+
+    * DMA  -- data_width=110, ``"dma"`` in module name -> 64-bit data + 9x5-bit ECC
+    * CAN  -- data_width=104, ``"can"`` or ``"flexcan"`` in module name
+            -> 64-bit data + 8x5-bit ECC
+    """
+    name = module_name.lower()
+    if data_width == 110 and "dma" in name:
+        return (64, 9, 5)
+    if data_width == 104 and ("can" in name or "flexcan" in name):
+        return (64, 8, 5)
+    return None
+
+
+def _ecc_wem_chunks(
+    data_bits: int, ecc_count: int, ecc_width: int, wem_width: int,
+) -> list[tuple[int, int]]:
+    """Return ``(msb, lsb)`` for each WEM-chunk of the *ram_we* reduction.
+
+    Chunks are ordered matching the template: overflow-ECC chunks first (highest
+    bits), then data-byte chunks (MSB->LSB).  Each chunk maps to one bit of the
+    generated ``ram_we`` wire -- ``ram_we[0]`` corresponds to the last chunk.
+    """
+    data_bytes = data_bits // 8
+    ecc_start = data_bits
+    chunks: list[tuple[int, int]] = []
+
+    # 1. Overflow ECC chunks (top of WEM range, highest bits first)
+    overflow = ecc_count - data_bytes
+    for j in range(overflow - 1, -1, -1):
+        idx = data_bytes + j
+        msb = ecc_start + (idx + 1) * ecc_width - 1
+        lsb = ecc_start + idx * ecc_width
+        msb = min(msb, wem_width - 1)
+        chunks.append((msb, lsb))
+
+    # 2. Data-byte chunks (MSB -> LSB)
+    for i in range(data_bytes - 1, -1, -1):
+        chunks.append((i * 8 + 7, i * 8))
+
+    return chunks
+
+
+def _gen_ecc_ram_we_wire(
+    block_idx: int,
+    we_expr: str,
+    wem_name: str,
+    chunks: list[tuple[int, int]],
+) -> str:
+    """Generate the ``ram_we`` wire declaration for one ECC-split memory block.
+
+    Returns a single-line Verilog ``wire [N-1:0] ram_we_<idx> = ...;``
+    declaration.
+    """
+    nbits = len(chunks)
+    reductions = []
+    for msb, lsb in chunks:
+        if msb == lsb:
+            reductions.append(f"&{wem_name}[{msb}]")
+        else:
+            reductions.append(f"&{wem_name}[{msb}:{lsb}]")
+    inner = "{" + ", ".join(reductions) + "}"
+    return (
+        f"wire [{nbits - 1}:0] ram_we_{block_idx} = {{{nbits}{{{we_expr}}}}} & {inner};"
+    )
+
+
+def _gen_ecc_split_body(
+    block_idx: int,
+    clk_name: str,
+    addr_full: str,
+    me_expr: str,
+    ram_we_sig: str,
+    wdata_name: str,
+    rdata_name: str,
+    addr_width: int,
+    mem_depth: int,
+    ecc_count: int,
+) -> list[str]:
+    """Generate Verilog lines for the data+ECC fpga_spram instances of one
+    ECC-split memory block.
+
+    Returns a list of lines (already indented with ``  ``).
+
+    * ``ram_we_sig`` -- name of the local ram_we wire (e.g. ``ram_we_0``).
+    """
+    lines: list[str] = []
+    data_bytes = 8  # always 64-bit data portion
+
+    # ---- data fpga_spram (64-bit) --------------------------------------------
+    lines.append("")
+    lines.append("  fpga_spram #(")
+    lines.append(f"      .MEMDEPTH ({mem_depth}),")
+    lines.append(f"      .MEMWIDTH (64),")
+    lines.append(f"      .BYTEWIDTH(8),")
+    lines.append(f"      .ADDRWIDTH({addr_width}),")
+    lines.append(f"      .MEMTYPE  (\"block\")")
+    lines.append(f"  )")
+    lines.append(f"  mem_64_{block_idx}(")
+    lines.append(f"      .ram_clk  ({clk_name}),")
+    lines.append(f"      .ram_addr ({addr_full}),")
+    lines.append(f"      .ram_me   ({me_expr}),")
+    lines.append(f"      .ram_we   ({ram_we_sig}[{data_bytes - 1}:0]),")
+    lines.append(f"      .ram_wdata({wdata_name}[{data_bytes * 8 - 1}:0]),")
+    lines.append(f"      .ram_rdata({rdata_name}[{data_bytes * 8 - 1}:0])")
+    lines.append(f"  );")
+
+    # ---- ECC fpga_spram (5-bit each) in a generate loop ---------------------
+    lines.append("")
+    lines.append(f"  genvar i_{block_idx};")
+    lines.append(f"  generate")
+    lines.append(f"  for(i_{block_idx}=0;i_{block_idx}<{ecc_count};i_{block_idx}=i_{block_idx}+1)")
+    lines.append(f"  begin:gen_upecc_{block_idx}")
+    lines.append(f"  fpga_spram #(")
+    lines.append(f"      .MEMDEPTH ({mem_depth}),")
+    lines.append(f"      .MEMWIDTH (5),")
+    lines.append(f"      .BYTEWIDTH(5),")
+    lines.append(f"      .ADDRWIDTH({addr_width}),")
+    lines.append(f"      .MEMTYPE  (\"block\")")
+    lines.append(f"  )")
+    lines.append(f"  ecc(")
+    lines.append(f"      .ram_clk  ({clk_name}),")
+    lines.append(f"      .ram_addr ({addr_full}),")
+    lines.append(f"      .ram_me   ({me_expr}),")
+    lines.append(f"      .ram_we   ({ram_we_sig}[i_{block_idx}]),")
+    lines.append(f"      .ram_wdata({wdata_name}[{data_bytes * 8}+5*i_{block_idx}+:5]),")
+    lines.append(f"      .ram_rdata({rdata_name}[{data_bytes * 8}+5*i_{block_idx}+:5])")
+    lines.append(f"  );")
+    lines.append(f"  end")
+    lines.append(f"  endgenerate")
+
+    return lines
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _reduce_wem_mask(
+    signal_name: str,
+    src_width: int,
+    byte_width: int,
+    gwen_expr: str | None = None,
+    bytelen: int = 8,
+) -> str:
+    """Reduce a per-bit WEM mask to per-byte ``ram_we``.
+
+    In RTL wrapper convention, write-enable signals are **active-low**:
+    ``wen[i] = 0`` means data bit *i* is write-enabled.  ``fpga_spram``
+    uses ``ram_we`` which is **active-high per-byte-lane**: each bit enables
+    one byte write when ``1``.
+
+    * 1-bit source (global enable) -> invert + replicate to *byte_width*.
+    * Multi-bit source (per-bit WEM mask matching data width) -> byte-wise
+      NAND reduction: ``~(& wen[msb:lsb])`` for each byte slice.
+    * If *gwen_expr* is given (an already-inverted ``~GWEN``), it gates
+      every byte lane via ``&``.
+
+    Returns a Verilog expression of the correct width without any trailing
+    width annotation (the surrounding concat ``{}`` provides it).
+    """
+    if src_width == 1:
+        # 1-bit global: just invert (once) and replicate
+        expr = f"~{signal_name}"
+        if gwen_expr:
+            expr = f"{gwen_expr} & {expr}"
+        return f"{{{byte_width}{{{expr}}}}}"
+
+    # Multi-bit WEM mask -- reduce per-byte with NAND
+    slices: list[str] = []
+    lsb = 0
+    for _ in range(byte_width):
+        msb = lsb + bytelen - 1
+        if msb >= src_width:
+            msb = src_width - 1
+        if msb == lsb:
+            inner = f"~{signal_name}[{lsb}]"
+        else:
+            inner = f"~(&{signal_name}[{msb}:{lsb}])"
+        if gwen_expr:
+            inner = f"{gwen_expr} & {inner}"
+        slices.append(inner)
+        lsb = msb + 1
+        if lsb >= src_width:
+            break
+
+    return "{" + ", ".join(reversed(slices)) + "}"
+
+
+def _gen_ram_we(
+    signals: dict[str, tuple[str, int, str]],
+    byte_width: int,
+) -> str:
+    """Build the ``ram_we`` port connection for a memory block.
+
+    Priority:
+    1. **WEN present** -- it is a WEM write-enable-mask (active-low).
+       Multi-bit masks are reduced from per-bit to per-byte.
+       If GWEN is also present its ``~GWEN`` gates every byte lane.
+    2. **No WEN, GWEN present** -- replicates ``~GWEN`` to *byte_width*.
+    3. **Neither** -- all-zero.
+    """
+    wen = signals.get("wen")
+    gwen = signals.get("gwen")
+
+    # Build the optional GWEN gate (already inverted form)
+    gwen_inverted: str | None = None
+    if gwen is not None:
+        gwen_inverted = "~" + gwen[0]  # ~GWEN -> active-high
+
+    if wen is not None:
+        wen_name, wen_width, _ = wen
+        return _reduce_wem_mask(wen_name, wen_width, byte_width, gwen_inverted)
+    elif gwen is not None:
+        gwen_name, gwen_width, _ = gwen
+        return _reduce_wem_mask(gwen_name, gwen_width, byte_width, None)
+    else:
+        return f"{{{byte_width}{{1'b0}}}}"
+
 
 def _parse_port_list(text: str) -> list[tuple[str, int, str]]:
     """Extract (name, width, range_str) tuples from a Verilog port list."""
@@ -238,17 +466,8 @@ def _build_memory_port(
     else:
         port.me = "1'b1"
 
-    # Write enable
-    if "wen" not in signals and "gwen" in signals:
-        port.ram_we = "~" + signals["gwen"][0]
-    elif "wen" in signals and "gwen" not in signals:
-        port.ram_we = "~" + signals["wen"][0]
-    elif "wen" in signals and "gwen" in signals:
-        # Both bit-write-enable and global-write-enable present —
-        # use the global write enable (gwen) as the single-bit ram_we.
-        port.ram_we = "~" + signals["gwen"][0]
-    else:
-        port.ram_we = "1'b0"
+    # Write enable -- priority: WEN (bitmask) > GWEN (global), both active-low
+    port.ram_we = _gen_ram_we(signals, port.byte_width)
 
     # ROM data
     if is_rom:
@@ -258,7 +477,7 @@ def _build_memory_port(
 
 
 # ---------------------------------------------------------------------------
-# FPGA wrapper generation (mbist_wrap/rtl_v → mbist_wrap/fpga_v)
+# FPGA wrapper generation (mbist_wrap/rtl_v -> mbist_wrap/fpga_v)
 # ---------------------------------------------------------------------------
 
 def _find_module_declaration(content: str):
@@ -273,7 +492,7 @@ def _find_module_declaration(content: str):
 
     module_name = m.group(1)
 
-    # Find the ); that closes the port list — search from module keyword
+    # Find the ); that closes the port list -- search from module keyword
     end_match = re.search(r"\)\s*;", content[m.start():])
     if not end_match:
         return None, None, None
@@ -281,7 +500,7 @@ def _find_module_declaration(content: str):
     header_end = m.start() + end_match.end()
     module_header = content[m.start():header_end]
 
-    # The port list is the last ( ... ) in the header — work backwards
+    # The port list is the last ( ... ) in the header -- work backwards
     close_paren = m.start() + end_match.start()
     depth = 0
     open_paren = -1
@@ -351,7 +570,7 @@ def generate_fpga_wrapper(
 
     - The original module declaration (port list preserved verbatim).
     - ``fpga_spram`` instantiations for every memory port found.
-      Memory blocks are identified by counting ``clk_N`` signals — each
+      Memory blocks are identified by counting ``clk_N`` signals -- each
       distinct *N* suffix becomes one block, regardless of whether
       ``q_N`` is present in the port list.
     - Dummy wire declarations for any memory block missing its ``q`` output.
@@ -390,7 +609,7 @@ def generate_fpga_wrapper(
         return None
 
     logger.info(
-        "%s: found %d clk_N signal(s) → %d memory block(s)",
+        "%s: found %d clk_N signal(s) -> %d memory block(s)",
         wrapper_path.name, len(clk_indices), len(clk_indices),
     )
 
@@ -398,7 +617,9 @@ def generate_fpga_wrapper(
     is_rom = "rom" in wrapper_path.stem.lower()
     memory_ports: list[MemoryPort] = []
     mem_signal_names: set[str] = set()
-    dummy_wires: list[str] = []  # wire declarations for blocks missing q
+    dummy_wires: list[str] = []          # wire declarations for blocks missing q
+    ecc_ram_we_wires: list[str] = []      # ram_we wires for ECC-split blocks
+    ecc_split_blocks: list[str] = []      # Verilog for ECC-split blocks
 
     for idx in sorted(clk_indices):
         signals = mem_groups.get(idx, {})
@@ -408,14 +629,82 @@ def generate_fpga_wrapper(
             logger.debug("Block %d missing addr, skipping", idx)
             continue
 
+        # --- ECC-split detection (DMA 110-bit / CAN 104-bit) -------------------
+        data_sig = signals.get("data")
+        if data_sig is not None and "wen" in signals and "q" in signals:
+            _, data_width, _ = data_sig
+            ecc_info = _is_ecc_split(module_name, data_width)
+            if ecc_info:
+                data_bits, ecc_count, ecc_width = ecc_info
+
+                # --- WE expression (global write enable, active-high) ----------
+                if "gwen" in signals:
+                    we_expr = "~" + signals["gwen"][0]
+                elif signals["wen"][1] == 1:
+                    we_expr = "~" + signals["wen"][0]
+                else:
+                    we_expr = "1'b1"
+
+                # --- ME expression (memory enable, active-high) -----------------
+                if "cen" in signals:
+                    me_expr = "~" + signals["cen"][0]
+                elif "me" in signals:
+                    me_expr = signals["me"][0]
+                else:
+                    me_expr = "1'b1"
+
+                # --- Extract signal identities ----------------------------------
+                wem_name, wem_width, _ = signals["wen"]
+                addr_name, addr_width, addr_range = signals["addr"]
+                clk_name, _, _ = signals["clk"]
+                q_name, _, _ = signals["q"]
+                d_name, _, _ = data_sig
+
+                addr_full = addr_name + addr_range
+                mem_depth = 1 << addr_width
+
+                # --- WEM chunks + ram_we wire -----------------------------------
+                chunks = _ecc_wem_chunks(data_bits, ecc_count, ecc_width, wem_width)
+                ram_we_sig = f"ram_we_{idx}"
+                ecc_ram_we_wires.append(
+                    _gen_ecc_ram_we_wire(idx, we_expr, wem_name, chunks)
+                )
+
+                # --- ECC-split body (data spram + generate loop) ----------------
+                ecc_body = _gen_ecc_split_body(
+                    block_idx=idx,
+                    clk_name=clk_name,
+                    addr_full=addr_full,
+                    me_expr=me_expr,
+                    ram_we_sig=ram_we_sig,
+                    wdata_name=d_name,
+                    rdata_name=q_name,
+                    addr_width=addr_width,
+                    mem_depth=mem_depth,
+                    ecc_count=ecc_count,
+                )
+                ecc_split_blocks.extend(ecc_body)
+
+                # Track port names consumed by spram instances
+                for _sig_type, (name, _w, _rng) in signals.items():
+                    mem_signal_names.add(name)
+
+                logger.info(
+                    "  block %d: ECC split -> %d-bit data + %dx%d-bit ECC",
+                    idx, data_bits, ecc_count, ecc_width,
+                )
+                continue  # skip normal MemoryPort for this block
+
+        # --- Normal (non-ECC) MemoryPort path ----------------------------------
+
         addr_name, addr_width, addr_range = signals["addr"]
         clk_name, _, _ = signals["clk"]
 
-        # --- rdata (q) — may be absent; generate dummy wire if needed -------
+        # --- rdata (q) -- may be absent; generate dummy wire if needed -------
         if "q" in signals:
             q_name, q_width, q_range = signals["q"]
         else:
-            # No q_N port → declare a local wire for ram_rdata
+            # No q_N port -> declare a local wire for ram_rdata
             q_width = signals.get("data", (None, addr_width, ""))[1] if "data" in signals else addr_width
             q_name = f"fpga_q_{idx}"
             q_range = f"[{q_width - 1}:0]" if q_width > 1 else ""
@@ -452,13 +741,8 @@ def generate_fpga_wrapper(
         else:
             port.me = "1'b1"
 
-        # --- Write enable (gwen preferred over wen) -------------------------
-        if "gwen" in signals:
-            port.ram_we = "~" + signals["gwen"][0]
-        elif "wen" in signals:
-            port.ram_we = "~" + signals["wen"][0]
-        else:
-            port.ram_we = "1'b0"
+        # --- Write enable -- priority: WEN (bitmask) > GWEN (global) ----------
+        port.ram_we = _gen_ram_we(signals, port.byte_width)
 
         # --- ROM fix-up -----------------------------------------------------
         if is_rom:
@@ -471,7 +755,7 @@ def generate_fpga_wrapper(
         for _sig_type, (name, _w, _rng) in signals.items():
             mem_signal_names.add(name)
 
-    if not memory_ports:
+    if not memory_ports and not ecc_split_blocks:
         logger.warning("No usable memory blocks in %s", wrapper_path)
         return None
 
@@ -503,15 +787,26 @@ def generate_fpga_wrapper(
         for dw in dummy_wires:
             lines.append(f"  {dw}")
 
+    if ecc_ram_we_wires:
+        lines.append("")
+        for rw in ecc_ram_we_wires:
+            lines.append(f"  {rw}")
+
     if default_assignments:
         lines.append("")
         lines.append("  // Default assignments (non-memory ports)")
         for da in default_assignments:
             lines.append(f"  {da}")
 
-    if memory_ports:
+    if ecc_split_blocks or memory_ports:
         lines.append("")
         lines.append("  // FPGA memory instantiations")
+
+    if ecc_split_blocks:
+        for es in ecc_split_blocks:
+            lines.append(es)
+
+    if memory_ports:
         for mp in memory_ports:
             lines.append("")
             inst = mp.to_spram_instantiation()

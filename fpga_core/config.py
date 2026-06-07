@@ -70,7 +70,7 @@ RE_PORT = re.compile(
 MEM_PORT_PATTERNS: dict[str, re.Pattern] = {
     "addr": re.compile(r"^(a|A)_"),
     "data": re.compile(r"^(d|D)_"),
-    "gwen": re.compile(r"(gwen|GWEN)_"),   # must precede "wen" — gwen contains "wen"
+    "gwen": re.compile(r"(gwen|GWEN)_"),   # must precede "wen" -- gwen contains "wen"
     "wen":  re.compile(r"(?<!g)(wen|WEN)_"),
     "wem":  re.compile(r"(wem|WEM)_"),
     "me":   re.compile(r"(me|ME)_"),
@@ -117,7 +117,7 @@ add_files -fileset constrs_1 -norecurse $SOC_TB_DIR/fpga/constraints/cppe_cons.x
 
 
 # ---------------------------------------------------------------------------
-# Environment-variable → filelist variable substitution map
+# Environment-variable -> filelist variable substitution map
 # ---------------------------------------------------------------------------
 
 ENV_TO_FILELIST_VAR: dict[str, str] = {
@@ -151,7 +151,7 @@ class FPGAToolConfig:
     # FPGA testbench paths
     tb_fpga_paths: list[Path] = field(default_factory=list)
 
-    # Path to bcompare executable (None → auto-detect)
+    # Path to bcompare executable (None -> auto-detect)
     bcompare_exe: Optional[Path] = None
 
     # Output directories
@@ -201,6 +201,12 @@ def make_sentinel(block_id: int) -> str:
 
 RED    = "\033[1;91m"
 YELLOW = "\033[1;93m"
+GREEN  = "\033[1;92m"
+CYAN   = "\033[1;96m"
+BLUE   = "\033[1;94m"
+MAGENTA = "\033[1;95m"
+DIM    = "\033[2m"
+BOLD   = "\033[1m"
 RESET  = "\033[0m"
 
 
@@ -210,3 +216,19 @@ def red(text: str) -> str:
 
 def yellow(text: str) -> str:
     return f"{YELLOW}{text}{RESET}"
+
+
+def green(text: str) -> str:
+    return f"{GREEN}{text}{RESET}"
+
+
+def cyan(text: str) -> str:
+    return f"{CYAN}{text}{RESET}"
+
+
+def dim(text: str) -> str:
+    return f"{DIM}{text}{RESET}"
+
+
+def bold(text: str) -> str:
+    return f"{BOLD}{text}{RESET}"

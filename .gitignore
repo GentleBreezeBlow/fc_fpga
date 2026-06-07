@@ -30,3 +30,6 @@ Desktop.ini
 
 # Environment-specific (path depends on machine)
 .env
+
+# Sensitive docs (contains API keys)
+docs/新电脑Claude-Code配置指南.md

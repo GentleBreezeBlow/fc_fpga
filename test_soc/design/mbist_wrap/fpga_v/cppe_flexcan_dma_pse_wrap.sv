@@ -51,10 +51,8 @@ input  [1:0] rawlm_1,
 input  stov_1,
 output [103:0] q_1);
 
-  // Default assignments (non-memory ports)
-  assign sys_test_pass = 1'b0;
-  assign sys_test_done = 1'b0;
-  assign so_0 = {2{1'b0}};
+  wire [8:0] ram_we_0 = {9{~gwen_0}} & {&wen_0[108:104], &wen_0[63:56], &wen_0[55:48], &wen_0[47:40], &wen_0[39:32], &wen_0[31:24], &wen_0[23:16], &wen_0[15:8], &wen_0[7:0]};
+  wire [7:0] ram_we_1 = {8{~gwen_1}} & {&wen_1[63:56], &wen_1[55:48], &wen_1[47:40], &wen_1[39:32], &wen_1[31:24], &wen_1[23:16], &wen_1[15:8], &wen_1[7:0]};
 
 .....
 

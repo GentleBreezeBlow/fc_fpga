@@ -5,7 +5,17 @@ module cppe_fpga_top (
   input  wire  uart_rx,
   output wire  uart_tx
 );
-  // SoC instantiation
-  cpu_core u_cpu (.clk(clk_100mhz), .rst_n(rst_n), .*);
-  uart_top u_uart (.clk(clk_100mhz), .rst_n(rst_n), .rx(uart_rx), .tx(uart_tx), .*);
+  // SoC instantiation — hierarchical chip_top
+  chip_top #(.SOC_ID(32'h0001)) u_chip_top (
+    .sys_clk    (clk_100mhz),
+    .sys_rst_n  (rst_n),
+    .jtag_tck   (1'b0),
+    .jtag_tms   (1'b0),
+    .jtag_tdi   (1'b0),
+    .jtag_tdo   (),
+    .uart_rx    (uart_rx),
+    .uart_tx    (uart_tx),
+    .ext_wakeup (1'b0),
+    .wakeup_ack ()
+  );
 endmodule

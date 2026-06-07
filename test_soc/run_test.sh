@@ -26,17 +26,18 @@ echo "DESIGN         = $DESIGN"
 echo "SOC_TB_DIR     = $SOC_TB_DIR"
 echo ""
 echo "Available test commands:"
-echo "  test_sync      — Run fpga_v ← rtl_v sync only"
+echo "  test_sync      — Run fpga_v <- rtl_v sync only"
 echo "  test_memory    — Generate memory replacement files"
 echo "  test_filelist  — Generate filelist.f"
 echo "  test_compare   — Run bcompare diff report"
 echo "  test_full      — Run complete workflow"
-echo "  test_pairs     — List all rtl_v ↔ fpga_v pairs"
+echo "  test_pairs     — List all rtl_v <-> fpga_v pairs"
+echo "  test_list_ips  — List IPs in hierarchy modules"
 echo "  test_reset     — Reset fpga_v files to original state"
 echo ""
 
 test_pairs() {
-    echo "=== RTL ↔ FPGA file pairs ==="
+    echo "=== RTL <-> FPGA file pairs ==="
     python3 -c "
 from pathlib import Path
 from fpga_core.scanner import DesignScanner
@@ -45,10 +46,10 @@ dirs = [Path(os.environ['SOC_DESIGN_DIR']), Path(os.environ['COMMON_IP_DIR'])]
 dirs = [d for d in dirs if d.is_dir()]
 scanner = DesignScanner(dirs)
 for r, f in scanner.iter_fpga_pairs():
-    print(f'  {f.name:25s}  ←  {r}')
+    print(f'  {f.parent.parent.name}/{f.parent.name}/{f.name:20s}  <-  {r.parent.name}/{r.name}')
 print()
 for s, r in scanner.iter_stub_files():
-    print(f'  [STUB] {s.name:20s}  ←  {r}')
+    print(f'  [STUB] {s.parent.parent.name}/{s.parent.name}/{s.name:15s}  <-  {r.name}')
 "
 }
 
@@ -58,9 +59,7 @@ test_sync() {
     echo ""
     echo "=== Results ==="
     echo "Check the fpga_v files to see merged changes:"
-    for f in $SOC_DESIGN_DIR/*/fpga_v/*.sv; do
-        echo "  $f"
-    done
+    find $SOC_DESIGN_DIR -path "*/fpga_v/*.sv" -exec echo "  {}" \;
 }
 
 test_memory() {
@@ -93,15 +92,18 @@ test_full() {
     ls -la filelist.f fpga_memory_output/ reports/ 2>/dev/null
 }
 
+test_list_ips() {
+    echo "=== List IPs in hierarchy modules ==="
+    python3 fpga.py list-ips
+}
+
 test_reset() {
     echo "=== Resetting fpga_v files to original state ==="
-    cd /d/ai/fpga/test_soc/design/cpu_core/fpga_v
-    git checkout cpu_core.sv 2>/dev/null || echo "  (not under git — skipping cpu_core)"
-    cd /d/ai/fpga/test_soc/design/uart/fpga_v
-    git checkout uart_top.sv 2>/dev/null || echo "  (not under git — skipping uart)"
-    cd /d/ai/fpga/test_soc/design/spi_controller/fpga_v
-    git checkout spi_ctrl.sv 2>/dev/null || echo "  (not under git — skipping spi_ctrl)"
     cd /d/ai/fpga
+    git checkout test_soc/design/chip_top/fpga_v/chip_top.sv 2>/dev/null || echo "  (not under git — skipping chip_top)"
+    git checkout test_soc/design/run_int/cpu_core/fpga_v/cpu_core.sv 2>/dev/null || echo "  (not under git — skipping cpu_core)"
+    git checkout test_soc/design/standby_int/uart/fpga_v/uart_top.sv 2>/dev/null || echo "  (not under git — skipping uart)"
+    git checkout test_soc/design/run_int/spi_controller/fpga_v/spi_ctrl.sv 2>/dev/null || echo "  (not under git — skipping spi_ctrl)"
     echo "Done."
 }
 
