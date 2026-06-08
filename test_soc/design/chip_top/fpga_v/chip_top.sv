@@ -75,6 +75,10 @@ module chip_top #(
   output wire [N_UART-1:0]    run_uart_rx_valid
 );
 
+`ifdef FPGA_SYN
+  wire fpga_clk;
+  BUFG bufg_inst (.O(fpga_clk), .I(sys_clk));
+`endif
   //===========================================================
   // Internal connections
   //===========================================================
@@ -141,10 +145,6 @@ module chip_top #(
     .dma_cen_0      (dma_cen_0),
     .dma_a_0        (dma_a_0),
     .dma_d_0        (dma_d_0),
-`ifdef FPGA_SYN
-  wire fpga_clk;
-  BUFG bufg_inst (.O(fpga_clk), .I(sys_clk));
-`endif
     .dma_wen_0      (dma_wen_0),
     .dma_q_0        (dma_q_0),
     .dma_clk_1      (dma_clk_1),
@@ -164,6 +164,7 @@ module chip_top #(
     .*
   );
 
+`ifndef FPGA_SYN
   //===========================================================
   // Wakeup logic — NEW block
   //===========================================================
@@ -174,7 +175,6 @@ module chip_top #(
     else
       wakeup_ack_reg <= ext_wakeup;      // CHANGED: was 1'b0, now latches ext_wakeup
   end
-`ifndef FPGA_SYN
   assign wakeup_ack = wakeup_ack_reg;
 `else
   wire debug_mode;

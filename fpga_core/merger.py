@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from .block_extractor import FPGABlock, FPGABlockExtractor
-from .config import YELLOW, RED, RESET
+from .config import GREEN, YELLOW, RED, RESET
 
 logger = logging.getLogger(__name__)
 
@@ -219,7 +219,7 @@ class FileMerger:
                     b1, b2, a2 - a1, tag, blocks, block_positions, block_warnings
                 )
                 self._shift_block_positions(
-                    block_positions, b1, b2, a2 - a1
+                    block_positions, b1, b2, a2 - a1, blocks
                 )
                 merged.extend(clean_rtl_lines[a1:a2])
 
@@ -231,7 +231,7 @@ class FileMerger:
                     b1, b1, new_len, tag, blocks, block_positions, block_warnings
                 )
                 self._shift_block_positions(
-                    block_positions, b1, b1, new_len
+                    block_positions, b1, b1, new_len, blocks
                 )
                 merged.extend(clean_rtl_lines[a1:a2])
 
@@ -261,9 +261,14 @@ class FileMerger:
         positions: dict[int, list[int]],
         warnings: list[int],
     ) -> None:
-        """Check whether the diff region [b1, b2) overlaps any block's RTL area."""
+        """Check whether the diff region [b1, b2) overlaps any block's RTL area.
+
+        Uses the block's **original** ``clean_start``/``clean_end`` (before any
+        position shifts) so that overlap is detected correctly even after
+        earlier opcodes have shifted the block within the merged output.
+        """
         for bid, block in blocks.items():
-            bs, be = positions[bid]
+            bs, be = block.clean_start, block.clean_end
             if block.rtl_visible_count == 0:
                 continue
             # Does [b1, b2) intersect [bs, be)?
@@ -281,21 +286,35 @@ class FileMerger:
         b1: int,
         b2: int,
         new_len: int,
+        blocks: dict[int, FPGABlock],
     ) -> None:
-        """Update block clean_start/clean_end after inserting/deleting lines."""
+        """Update block clean_start/clean_end after inserting/deleting lines.
+
+        Uses the block's **original** ``clean_start``/``clean_end`` to decide
+        whether the block is before / inside / after the changed region.
+        The actual delta is applied to the *shifted* positions tracked in
+        *positions*.
+        """
         delta = new_len - (b2 - b1)
         if delta == 0:
             return
 
-        for bid, (bs, be) in positions.items():
-            if be <= b1:
-                continue  # block entirely before change -- no shift
-            if bs >= b2:
+        for bid in list(positions.keys()):
+            bs_cur, be_cur = positions[bid]
+            block = blocks.get(bid)
+            if block is None:
+                continue
+            # Use original positions for overlap detection
+            bs_orig, be_orig = block.clean_start, block.clean_end
+
+            if be_orig <= b1:
+                continue  # block entirely before change in original space -- no shift
+            if bs_orig >= b2:
                 # Block entirely after change -- shift by delta
-                positions[bid] = [bs + delta, be + delta]
-            elif bs < b2 and be > b1:
+                positions[bid] = [bs_cur + delta, be_cur + delta]
+            elif bs_orig < b2 and be_orig > b1:
                 # Block overlaps the changed region -- extend/contract
-                positions[bid] = [bs, be + delta]
+                positions[bid] = [bs_cur, be_cur + delta]
 
     # ------------------------------------------------------------------
     # RTL-block merging helpers
@@ -407,7 +426,7 @@ class FileMerger:
                 new_len = a2 - a1
             else:
                 continue  # equal / insert -- no length change
-            FileMerger._shift_block_positions(_pos, b1, b1 + old_len, new_len)
+            FileMerger._shift_block_positions(_pos, b1, b1 + old_len, new_len, blocks)
         for bid, b in blocks.items():
             if bid in _pos:
                 b.clean_start, b.clean_end = _pos[bid]
@@ -616,6 +635,12 @@ def sync_stub_ports(
         logger.warning("Cannot parse module header in stub: %s", stub_path)
         return False
 
+    # ---- Compare ports BEFORE syncing --------------------------------------
+    rtl_ports = _extract_port_names(rtl_header[0])
+    stub_ports = _extract_port_names(stub_header[0])
+    port_added = sorted(rtl_ports - stub_ports)
+    port_removed = sorted(stub_ports - rtl_ports)
+
     if rtl_header[0] == stub_header[0]:
         return False
 
@@ -632,17 +657,26 @@ def sync_stub_ports(
     )
     stub_path.write_text(new_stub, encoding="utf-8")
 
+    # ---- Report port diff -------------------------------------------------
+    if port_added:
+        logger.info(
+            "  %s+%d port(s) added%s: %s",
+            GREEN, len(port_added), RESET, ", ".join(port_added),
+        )
+    if port_removed:
+        logger.warning(
+            "  %s-%d port(s) removed%s: %s",
+            RED, len(port_removed), RESET, ", ".join(port_removed),
+        )
+
     # ---- Warn if body references ports that no longer exist -----------------
-    new_ports = _extract_port_names(rtl_header[0])
-    old_ports = _extract_port_names(stub_header[0])
-    removed_ports = old_ports - new_ports
-    if removed_ports:
+    if port_removed:
         body = stub_text[stub_hdr_end:]
-        for port in sorted(removed_ports):
+        for port in port_removed:
             if re.search(r"\b" + re.escape(port) + r"\b", body):
                 logger.warning(
-                    "%sSTUB BODY STALE%s [%s]: %sremoved port %s%s still referenced in body",
-                    YELLOW, RESET, stub_path.name, YELLOW, port, RESET,
+                    "  %sSTUB BODY STALE%s: removed port %s%s%s still referenced in body",
+                    YELLOW, RESET, YELLOW, port, RESET,
                 )
 
     return True

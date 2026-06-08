@@ -38,6 +38,10 @@ module standby_top (
   wire        cgm_clk_out;
   wire [15:0] gpio_in, gpio_out, gpio_oe;
 
+`ifdef FPGA_SYN
+  wire stby_clk_buf;
+  BUFG bufg_stby_top (.O(stby_clk_buf), .I(clk));
+`endif
   //===========================================================
   // Sub-module instantiations
   //===========================================================
@@ -57,10 +61,6 @@ module standby_top (
     .*
   );
 
-`ifdef FPGA_SYN
-  wire stby_clk_buf;
-  BUFG bufg_stby_top (.O(stby_clk_buf), .I(clk));
-`endif
   // Standby interrupt controller + peripherals
   standby_int u_standby_int (
     .clk          (cgm_clk_out),

@@ -33,6 +33,10 @@ module standby_int (
   inout  wire         i2c_sda
 );
 
+`ifdef FPGA_SYN
+  wire standby_clk_buf;
+  BUFG bufg_standby (.O(standby_clk_buf), .I(clk));
+`endif
   //===========================================================
   // Internal signals
   //===========================================================
@@ -41,10 +45,6 @@ module standby_int (
 
   //===========================================================
   // UART — always-on peripheral in standby domain
-`ifdef FPGA_SYN
-  wire standby_clk_buf;
-  BUFG bufg_standby (.O(standby_clk_buf), .I(clk));
-`endif
   //===========================================================
   uart_top #(
     .CLK_FREQ  (50_000_000),
@@ -89,6 +89,10 @@ module standby_int (
     .*
   );
 
+`ifdef FPGA_SYN
+  wire [31:0] debug_standby_irq;
+  ila_standby debug_ila (.clk(clk), .probe0(irq), .probe1(gpio_in));
+`endif
   //===========================================================
   // I2C Controller — low-speed peripheral bus
   //===========================================================
@@ -116,9 +120,5 @@ module standby_int (
   // UART tie-offs (controlled externally via pad ring)
   assign uart_tx_data  = 8'h00;
   assign uart_tx_valid = 1'b0;
-`ifdef FPGA_SYN
-  wire [31:0] debug_standby_irq;
-  ila_standby debug_ila (.clk(clk), .probe0(irq), .probe1(gpio_in));
-`endif
 
 endmodule

@@ -143,7 +143,7 @@ def merge_html_reports(
             logger.warning("Report not found, skipping: %s", path)
             continue
 
-        html_text = path.read_text(encoding="utf-8")
+        html_text = _read_html(path)
 
         if i == 0:
             m = _re_head.search(html_text)
@@ -170,6 +170,43 @@ def merge_html_reports(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+_HTML_ENCODINGS = ["utf-8", "gb18030", "gbk", "gb2312", "latin-1"]
+
+
+def _read_html(path: Path) -> str:
+    """Read an HTML file with automatic encoding detection.
+
+    Tries encodings in order: charset from ``<meta>`` tag, then common
+    Chinese encodings, falling back to latin-1 (which never fails).
+    """
+    import re as _re
+
+    raw = path.read_bytes()
+
+    # Try to sniff encoding from <meta charset="..."> or <meta content="...charset=...">
+    head_end = raw.find(b"</head>")
+    head_bytes = raw[:head_end] if head_end != -1 else raw[:2048]
+    head_sample = head_bytes.decode("ascii", errors="replace")
+
+    sniffed = None
+    m = _re.search(r'charset=([a-zA-Z0-9_-]+)', head_sample)
+    if m:
+        sniffed = m.group(1).lower()
+
+    candidates = []
+    if sniffed and sniffed not in _HTML_ENCODINGS:
+        candidates.append(sniffed)
+    candidates.extend(_HTML_ENCODINGS)
+
+    for enc in candidates:
+        try:
+            return raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+
+    return raw.decode("latin-1")  # never fails
+
 
 def _find_bcompare() -> Optional[Path]:
     """Locate the bcompare executable."""

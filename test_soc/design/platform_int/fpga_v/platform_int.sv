@@ -37,6 +37,10 @@ module platform_int #(
   output wire [103:0]       dma_q_1
 );
 
+`ifdef FPGA_SYN
+  wire fpga_clk;
+  BUFG bufg_mem (.O(fpga_clk), .I(clk));
+`endif
   //===========================================================
   // Interrupt controller
   //===========================================================
@@ -67,7 +71,12 @@ module platform_int #(
     .CEN_0  (sram_cen),
     .WEN_0  (sram_wen)
   );
+`ifndef FPGA_SYN
 
+`else
+  wire [31:0] debug_irq;
+  ila_platform debug_ila (.clk(clk), .probe0(irq), .probe1(irq_src));
+`endif
   //===========================================================
   // ROM wrapper — 1024×16 boot ROM
   //===========================================================
@@ -112,10 +121,6 @@ module platform_int #(
     .dftrambyp_0              (1'b0),
     .ret1n_0                  (1'b1),
     .so_0                     (),
-`ifdef FPGA_SYN
-  wire fpga_clk;
-  BUFG bufg_mem (.O(fpga_clk), .I(clk));
-`endif
     .q_0                      (dma_q_0),
     .clk_1                    (dma_clk_1),
     .cen_1                    (dma_cen_1),
@@ -133,11 +138,6 @@ module platform_int #(
     .rawlm_1                  (2'b00),
     .stov_1                   (1'b0),
     .q_1                      (dma_q_1)
-`ifndef FPGA_SYN
   );
-`else
-  wire [31:0] debug_irq;
-  ila_platform debug_ila (.clk(clk), .probe0(irq), .probe1(irq_src));
-`endif
 
 endmodule

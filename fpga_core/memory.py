@@ -44,17 +44,41 @@ class MemoryPort:
     mem_depth: int = 2
 
     @property
-    def byte_width(self) -> int:
-        """Number of byte-lane write-enable bits = ceil(MEMWIDTH / BYTEWIDTH)."""
+    def mem_width(self) -> int:
+        """Memory data width rounded up to the nearest multiple of 8.
+
+        For non-power-of-2 or non-byte-multiple bus widths (e.g. 39 bits),
+        pads to the next 8-bit boundary (→ 40 bits for 39).
+        """
         w = max(self.rdata_width, self.wdata_width)
-        return max((w + 7) // 8, 1)  # ceil division by 8
+        return ((w + 7) // 8) * 8
+
+    @property
+    def byte_width(self) -> int:
+        """Number of byte-lane write-enable bits = MEMWIDTH / BYTEWIDTH."""
+        return max(self.mem_width // 8, 1)
 
     def to_spram_instantiation(self) -> str:
-        """Generate a Verilog ``fpga_spram`` instantiation for this port."""
+        """Generate a Verilog ``fpga_spram`` instantiation for this port.
+
+        Signal widths that are not multiples of 8 are padded with leading
+        zeros to the next byte boundary.
+        """
+        # Pad wdata / rdata to mem_width if needed
+        wdata_pad = self.mem_width - self.wdata_width
+        wdata_expr = self.wdata
+        if wdata_pad > 0:
+            wdata_expr = f"{{{wdata_pad}{{1'b0}}, {self.wdata}}}"
+
+        rdata_pad = self.mem_width - self.rdata_width
+        rdata_expr = self.rdata
+        if rdata_pad > 0:
+            rdata_expr = f"{{{rdata_pad}{{1'b0}}, {self.rdata}}}"
+
         return (
             f"fpga_spram #(\n"
             f"    .MEMDEPTH ({self.mem_depth}),\n"
-            f"    .MEMWIDTH ({self.rdata_width}),\n"
+            f"    .MEMWIDTH ({self.mem_width}),\n"
             f"    .BYTEWIDTH(8),\n"
             f"    .ADDRWIDTH({self.addr_width}),\n"
             f"    .MEMTYPE (\"block\" )\n"
@@ -64,8 +88,8 @@ class MemoryPort:
             f"    .ram_addr ({self.addr}),\n"
             f"    .ram_me   ({self.me}),\n"
             f"    .ram_we   ({self.ram_we}),\n"
-            f"    .ram_wdata({self.wdata}),\n"
-            f"    .ram_rdata({self.rdata})\n"
+            f"    .ram_wdata({wdata_expr}),\n"
+            f"    .ram_rdata({rdata_expr})\n"
             f");"
         )
 
@@ -162,19 +186,23 @@ def generate_fpga_memory_file(
 # ECC-split memory generation (DMA 110-bit / CAN 104-bit)
 # ---------------------------------------------------------------------------
 
-def _is_ecc_split(module_name: str, data_width: int) -> tuple[int, int, int] | None:
-    """Return ``(data_bits, ecc_count, ecc_width)`` if this block needs
+def _is_ecc_split(module_name: str, data_width: int) -> tuple[int, int, int, str] | None:
+    """Return ``(data_bits, ecc_count, ecc_width, style)`` if this block needs
     ECC-split memory, otherwise ``None``.
 
     * DMA  -- data_width=110, ``"dma"`` in module name -> 64-bit data + 9x5-bit ECC
     * CAN  -- data_width=104, ``"can"`` or ``"flexcan"`` in module name
             -> 64-bit data + 8x5-bit ECC
+    * CPPE_CACHE -- data_width=36, ``"cppe_cache"`` in module name
+            -> 32-bit data + 1x4-bit ECC via fpga_mem
     """
     name = module_name.lower()
     if data_width == 110 and "dma" in name:
-        return (64, 9, 5)
+        return (64, 9, 5, "default")
     if data_width == 104 and ("can" in name or "flexcan" in name):
-        return (64, 8, 5)
+        return (64, 8, 5, "default")
+    if data_width == 36 and "cppe_cache" in name:
+        return (32, 1, 4, "cache")
     return None
 
 
@@ -241,37 +269,39 @@ def _gen_ecc_split_body(
     rdata_name: str,
     addr_width: int,
     mem_depth: int,
+    data_bits: int,
     ecc_count: int,
+    ecc_width: int,
 ) -> list[str]:
     """Generate Verilog lines for the data+ECC fpga_spram instances of one
-    ECC-split memory block.
+    ECC-split memory block (DMA/CAN style).
 
     Returns a list of lines (already indented with ``  ``).
 
     * ``ram_we_sig`` -- name of the local ram_we wire (e.g. ``ram_we_0``).
     """
     lines: list[str] = []
-    data_bytes = 8  # always 64-bit data portion
+    data_bytes = data_bits // 8
 
-    # ---- data fpga_spram (64-bit) --------------------------------------------
+    # ---- data fpga_spram -----------------------------------------------------
     lines.append("")
     lines.append("  fpga_spram #(")
     lines.append(f"      .MEMDEPTH ({mem_depth}),")
-    lines.append(f"      .MEMWIDTH (64),")
+    lines.append(f"      .MEMWIDTH ({data_bits}),")
     lines.append(f"      .BYTEWIDTH(8),")
     lines.append(f"      .ADDRWIDTH({addr_width}),")
     lines.append(f"      .MEMTYPE  (\"block\")")
     lines.append(f"  )")
-    lines.append(f"  mem_64_{block_idx}(")
+    lines.append(f"  mem_{data_bits}_{block_idx}(")
     lines.append(f"      .ram_clk  ({clk_name}),")
     lines.append(f"      .ram_addr ({addr_full}),")
     lines.append(f"      .ram_me   ({me_expr}),")
     lines.append(f"      .ram_we   ({ram_we_sig}[{data_bytes - 1}:0]),")
-    lines.append(f"      .ram_wdata({wdata_name}[{data_bytes * 8 - 1}:0]),")
-    lines.append(f"      .ram_rdata({rdata_name}[{data_bytes * 8 - 1}:0])")
+    lines.append(f"      .ram_wdata({wdata_name}[{data_bits - 1}:0]),")
+    lines.append(f"      .ram_rdata({rdata_name}[{data_bits - 1}:0])")
     lines.append(f"  );")
 
-    # ---- ECC fpga_spram (5-bit each) in a generate loop ---------------------
+    # ---- ECC fpga_spram (ecc_width-bit each) in a generate loop ---------------
     lines.append("")
     lines.append(f"  genvar i_{block_idx};")
     lines.append(f"  generate")
@@ -279,8 +309,8 @@ def _gen_ecc_split_body(
     lines.append(f"  begin:gen_upecc_{block_idx}")
     lines.append(f"  fpga_spram #(")
     lines.append(f"      .MEMDEPTH ({mem_depth}),")
-    lines.append(f"      .MEMWIDTH (5),")
-    lines.append(f"      .BYTEWIDTH(5),")
+    lines.append(f"      .MEMWIDTH ({ecc_width}),")
+    lines.append(f"      .BYTEWIDTH({ecc_width}),")
     lines.append(f"      .ADDRWIDTH({addr_width}),")
     lines.append(f"      .MEMTYPE  (\"block\")")
     lines.append(f"  )")
@@ -289,11 +319,94 @@ def _gen_ecc_split_body(
     lines.append(f"      .ram_addr ({addr_full}),")
     lines.append(f"      .ram_me   ({me_expr}),")
     lines.append(f"      .ram_we   ({ram_we_sig}[i_{block_idx}]),")
-    lines.append(f"      .ram_wdata({wdata_name}[{data_bytes * 8}+5*i_{block_idx}+:5]),")
-    lines.append(f"      .ram_rdata({rdata_name}[{data_bytes * 8}+5*i_{block_idx}+:5])")
+    lines.append(f"      .ram_wdata({wdata_name}[{data_bits}+{ecc_width}*i_{block_idx}+:{ecc_width}]),")
+    lines.append(f"      .ram_rdata({rdata_name}[{data_bits}+{ecc_width}*i_{block_idx}+:{ecc_width}])")
     lines.append(f"  );")
     lines.append(f"  end")
     lines.append(f"  endgenerate")
+
+    return lines
+
+
+def _gen_cache_ecc_body(
+    block_idx: int,
+    clk_name: str,
+    addr_full: str,
+    me_expr: str,
+    we_expr: str,
+    wem_name: str,
+    wdata_name: str,
+    rdata_name: str,
+    addr_width: int,
+    mem_depth: int,
+    data_bits: int,
+    ecc_width: int,
+) -> list[str]:
+    """Generate Verilog lines for a cache-style ECC-split memory block.
+
+    Uses ``fpga_spram`` for the data portion and ``fpga_mem`` for the ECC
+    portion (raw WEM passthrough, no generate loop).
+
+    Example for 36-bit (32 data + 4 ECC)::
+
+        wire [3:0] ram_we_0 = {4{WE}} & {&WEM[31:24], ..., &WEM[7:0]};
+        fpga_spram #(.MEMWIDTH(32)) mem_32_0(...);
+        fpga_mem   #(.MEMWIDTH(4), .NO_WEM(0)) ecc(.WEM(WEM[35:32]), ...);
+    """
+    data_bytes = data_bits // 8
+
+    # RAM_WE wire — data byte-lane reduction
+    reductions = []
+    for i in range(data_bytes - 1, -1, -1):
+        msb = (i + 1) * 8 - 1
+        lsb = i * 8
+        reductions.append(f"&{wem_name}[{msb}:{lsb}]")
+    inner = "{" + ", ".join(reductions) + "}"
+    ram_we_wire = (
+        f"wire [{data_bytes - 1}:0] ram_we_{block_idx}"
+        f" = {{{data_bytes}{{{we_expr}}}}} & {inner};"
+    )
+
+    ecc_start = data_bits
+
+    lines: list[str] = []
+    lines.append("")
+    lines.append(f"  {ram_we_wire}")
+
+    # ---- Data fpga_spram -----------------------------------------------------
+    lines.append("")
+    lines.append("  fpga_spram #(")
+    lines.append(f"      .MEMDEPTH ({mem_depth}),")
+    lines.append(f"      .MEMWIDTH ({data_bits}),")
+    lines.append(f"      .BYTEWIDTH(8),")
+    lines.append(f"      .ADDRWIDTH({addr_width}),")
+    lines.append(f"      .MEMTYPE  (\"block\")")
+    lines.append(f"  )")
+    lines.append(f"  mem_{data_bits}_{block_idx}(")
+    lines.append(f"      .ram_clk  ({clk_name}),")
+    lines.append(f"      .ram_addr ({addr_full}),")
+    lines.append(f"      .ram_me   ({me_expr}),")
+    lines.append(f"      .ram_we   (ram_we_{block_idx}[{data_bytes - 1}:0]),")
+    lines.append(f"      .ram_wdata({wdata_name}[{data_bits - 1}:0]),")
+    lines.append(f"      .ram_rdata({rdata_name}[{data_bits - 1}:0])")
+    lines.append(f"  );")
+
+    # ---- ECC fpga_mem ---------------------------------------------------------
+    lines.append("")
+    lines.append(f"  fpga_mem #(")
+    lines.append(f"      .MEMDEPTH ({mem_depth}),")
+    lines.append(f"      .MEMWIDTH ({ecc_width}),")
+    lines.append(f"      .NO_WEM   (0)")
+    lines.append(f"  )")
+    lines.append(f"  ecc_{block_idx}(")
+    lines.append(f"      .CLK      ({clk_name}),")
+    lines.append(f"      .ADR      ({addr_full}),")
+    lines.append(f"      .WEM      ({wem_name}[{ecc_start + ecc_width - 1}:{ecc_start}]),")
+    lines.append(f"      .WE       ({we_expr}),")
+    lines.append(f"      .ME       ({me_expr}),")
+    lines.append(f"      .D        ({wdata_name}[{ecc_start + ecc_width - 1}:{ecc_start}]),")
+    lines.append(f"      .Q        ({rdata_name}[{ecc_start + ecc_width - 1}:{ecc_start}])")
+    lines.append(f"  );")
 
     return lines
 
@@ -629,13 +742,13 @@ def generate_fpga_wrapper(
             logger.debug("Block %d missing addr, skipping", idx)
             continue
 
-        # --- ECC-split detection (DMA 110-bit / CAN 104-bit) -------------------
+        # --- ECC-split detection (DMA / CAN / CPPE_CACHE) ----------------------
         data_sig = signals.get("data")
         if data_sig is not None and "wen" in signals and "q" in signals:
             _, data_width, _ = data_sig
             ecc_info = _is_ecc_split(module_name, data_width)
             if ecc_info:
-                data_bits, ecc_count, ecc_width = ecc_info
+                data_bits, ecc_count, ecc_width, style = ecc_info
 
                 # --- WE expression (global write enable, active-high) ----------
                 if "gwen" in signals:
@@ -663,35 +776,56 @@ def generate_fpga_wrapper(
                 addr_full = addr_name + addr_range
                 mem_depth = 1 << addr_width
 
-                # --- WEM chunks + ram_we wire -----------------------------------
-                chunks = _ecc_wem_chunks(data_bits, ecc_count, ecc_width, wem_width)
-                ram_we_sig = f"ram_we_{idx}"
-                ecc_ram_we_wires.append(
-                    _gen_ecc_ram_we_wire(idx, we_expr, wem_name, chunks)
-                )
+                if style == "cache":
+                    # --- Cache-style: fpga_spram + fpga_mem (no generate loop) --
+                    ecc_body = _gen_cache_ecc_body(
+                        block_idx=idx,
+                        clk_name=clk_name,
+                        addr_full=addr_full,
+                        me_expr=me_expr,
+                        we_expr=we_expr,
+                        wem_name=wem_name,
+                        wdata_name=d_name,
+                        rdata_name=q_name,
+                        addr_width=addr_width,
+                        mem_depth=mem_depth,
+                        data_bits=data_bits,
+                        ecc_width=ecc_width,
+                    )
+                    ecc_split_blocks.extend(ecc_body)
+                else:
+                    # --- DMA/CAN-style: data spram + generate loop ECC ----------
+                    chunks = _ecc_wem_chunks(
+                        data_bits, ecc_count, ecc_width, wem_width,
+                    )
+                    ram_we_sig = f"ram_we_{idx}"
+                    ecc_ram_we_wires.append(
+                        _gen_ecc_ram_we_wire(idx, we_expr, wem_name, chunks)
+                    )
 
-                # --- ECC-split body (data spram + generate loop) ----------------
-                ecc_body = _gen_ecc_split_body(
-                    block_idx=idx,
-                    clk_name=clk_name,
-                    addr_full=addr_full,
-                    me_expr=me_expr,
-                    ram_we_sig=ram_we_sig,
-                    wdata_name=d_name,
-                    rdata_name=q_name,
-                    addr_width=addr_width,
-                    mem_depth=mem_depth,
-                    ecc_count=ecc_count,
-                )
-                ecc_split_blocks.extend(ecc_body)
+                    ecc_body = _gen_ecc_split_body(
+                        block_idx=idx,
+                        clk_name=clk_name,
+                        addr_full=addr_full,
+                        me_expr=me_expr,
+                        ram_we_sig=ram_we_sig,
+                        wdata_name=d_name,
+                        rdata_name=q_name,
+                        addr_width=addr_width,
+                        mem_depth=mem_depth,
+                        data_bits=data_bits,
+                        ecc_count=ecc_count,
+                        ecc_width=ecc_width,
+                    )
+                    ecc_split_blocks.extend(ecc_body)
 
                 # Track port names consumed by spram instances
                 for _sig_type, (name, _w, _rng) in signals.items():
                     mem_signal_names.add(name)
 
                 logger.info(
-                    "  block %d: ECC split -> %d-bit data + %dx%d-bit ECC",
-                    idx, data_bits, ecc_count, ecc_width,
+                    "  block %d: ECC split (%s) -> %d-bit data + %dx%d-bit ECC",
+                    idx, style, data_bits, ecc_count, ecc_width,
                 )
                 continue  # skip normal MemoryPort for this block
 

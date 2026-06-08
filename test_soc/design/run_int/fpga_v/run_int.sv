@@ -36,6 +36,10 @@ module run_int #(
   output wire        spi2_cs_n
 );
 
+`ifdef FPGA_SYN
+  wire run_clk_buf;
+  BUFG bufg_run_int (.O(run_clk_buf), .I(clk));
+`endif
   //===========================================================
   // Internal signals
   //===========================================================
@@ -89,13 +93,6 @@ module run_int #(
   //===========================================================
   // SPI Controller 1
   //===========================================================
-  `ifdef FPGA_SYN
-  assign spi_rx_data[1] = 8'b0;
-  assign spi_done[1] = 1'b0;
-  assign spi1_mosi = 1'b0;
-  assign spi1_sclk = 1'b0;
-  assign spi1_cs_n = 1'b0;
-  `else
   spi_ctrl #(
     .DATA_WIDTH (8),
     .CLK_DIV    (4)
@@ -114,18 +111,14 @@ module run_int #(
     .cpha     (spi_cpha[1]),
     .*
   );
-  `endif
 
+`ifdef FPGA_SYN
+  wire [31:0] debug_run_irq;
+  ila_run_int debug_ila (.clk(clk), .probe0(irq));
+`endif
   //===========================================================
   // SPI Controller 2
   //===========================================================
-  `ifdef FPGA_SYN
-  assign spi_rx_data[2] = 8'b0;
-  assign spi_done[2] = 1'b0;
-  assign spi2_mosi = 1'b0;
-  assign spi2_sclk = 1'b0;
-  assign spi2_cs_n = 1'b0;
-  `else
   spi_ctrl #(
     .DATA_WIDTH (8),
     .CLK_DIV    (4)
@@ -144,7 +137,6 @@ module run_int #(
     .cpha     (spi_cpha[2]),
     .*
   );
-  `endif
 
   //===========================================================
   // UART Array — 12 instances via generate loop

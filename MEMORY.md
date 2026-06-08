@@ -2,13 +2,14 @@
 
 > Cross-session context. CLAUDE.md links here for project history.
 
-## Current state snapshot (2026-06-06)
+## Current state snapshot (2026-06-08)
 
-- 14 FPGA pairs (11 original + 3 memory wrappers)
+- 16 FPGA pairs (11 original + 5 memory wrappers: sram, rom, dma, cppe_ram, cppe_cache)
 - 1 stub pair (dip_sce)
 - `verify.py`: 11 OLD states, 47 checks, 7 steps
 - `list-ips`: `spi_ctrl` ×3 (spi0/1/2), `uart_top` ×12 (uart_gen[0..11].u_uart), platform_int memory wrappers, standby_int timer + i2c
-- `_check_required_env()` validates all 9 env vars before any command
+- `_check_required_env()` validates all env vars + `PROJ_NAME` before any command
+- fpga_scripts.zip: 13 files including README.md (stripped test_soc, no pip deps)
 
 ## How we got here
 
@@ -172,8 +173,64 @@ standby_int: gpio
 
 - `filelist.py` `generate_filelist()`: fpga_v file count verification now includes TB fpga_v files (`tb_fpga_paths`) in `expected_count`, fixing false "count mismatch" warnings
 
-## GitHub
+## 2026-06-08 changelog (all changes this session)
 
+### Python 3.9 compatibility
+- `Path.walk()` → `os.walk()` across scanner.py (4 sites), filelist.py (1), stripper.py (1), fpga.py (1) — `Path.walk()` is 3.12+ only
+- All `os.walk` sites filter out `tool_data` via `dirs[:] = [d for d in dirs if d not in SKIP_DIRS]`
+
+### merger.py — block position fix
+- `_check_block_overlap` and `_shift_block_positions` now use block's **original** `clean_start/clean_end` for overlap checks, not shifted positions
+- Root cause: after prior opcodes shift blocks, shifted positions are in different coordinate space than opcode B ranges → overlap never detected → blocks drift outside `ifndef` wrappers
+- `_shift_block_positions` now takes `blocks` parameter for original position lookup
+
+### merger.py — stub port diff
+- `sync_stub_ports()` now reports port diff before syncing: green `+N port(s) added: ...`, red `-N port(s) removed: ...`
+- Yellow `STUB BODY STALE` warning for removed ports still referenced in body
+
+### memory.py — mem_width padding + cppe_cache ECC
+- `MemoryPort.mem_width` property: rounds max(rdata, wdata) up to nearest 8-boundary (39→40)
+- `to_spram_instantiation()`: pads signals to `mem_width` with `{N{1'b0}}`; MEMWIDTH uses `mem_width`
+- `_is_ecc_split()` returns 4-tuple `(data_bits, ecc_count, ecc_width, style)` — new `style` field
+- cppe_cache (36-bit + name match): 32-bit data `fpga_spram` + `fpga_mem` (raw WEM, single instance, no generate loop) — style="cache"
+- `_gen_ecc_split_body()`: parameterized (removed hardcoded 64/5)
+- `_gen_cache_ecc_body()`: new function for cache-style ECC generation
+
+### memory.py — fpga_v cleanup
+- `gen_memory_files()` in fpga.py: `shutil.rmtree(output_dir)` before `mkdir` — old project wrappers don't linger
+
+### report.py — HTML encoding
+- `_read_html()`: new function with auto encoding detection (charset sniffing + GBK/GB18030 fallback)
+- `merge_html_reports()` uses `_read_html()` instead of hardcoded `read_text(encoding="utf-8")`
+
+### filelist.py — absolute paths + mbist cleanup + xdc
+- `_expand_tcl_vars()`: replaces `$VAR`/`${VAR}` with env var values (absolute paths, `/` normalized)
+- `_substitute_env_vars()` renamed, kept as backward compat
+- Strips all `/mbist_wrap/rtl_v/` entries from source before fpga_v replacement
+- `FPGA_XDC_PROPERTY`: `cppe_cons.xdc` → `${PROJ_NAME}_cons.xdc` + ENV_TO_FILELIST_VAR registered
+
+### fpga.py CLI
+- `sync --no-compare`: skip diff report generation
+- `_find_fpga_hier_file`: `os.walk` fix + SKIP_DIRS filter
+- Removed duplicate "Merging:" log line (merger.py already prints "Syncing:")
+- sync stage: `MANUAL REVIEW` warning includes absolute path via `fpga_path.resolve()`
+
+### stripper.py — un-strip
+- `_unstrip_removed()`: scans file for existing `ifdef FPGA_SYN` wrapped instances, restores any not in current config
+- `_INST_NAME_FROM_BODY_RE`: matches `module_name [#(...)] inst_name (` in wrapped body
+- Write-back condition: `stripped > 0 or unstrip_count > 0`
+
+### config.py
+- `SKIP_DIRS = frozenset({"tool_data"})` — directory names skipped during design tree traversal
+- `PROJ_NAME` added to `ENV_TO_FILELIST_VAR` and `_check_required_env()`
+
+### Documentation
+- `README.md`: created with full usage guide (commands, workflow, architecture, config)
+- `verify.py`: removed `webbrowser.open()` auto-launch after report generation
+
+### test_soc additions
+- Added cppe_ram_wrap.v (39-bit, tests padding) and cppe_cache_wrap.v (36-bit, tests ECC-split) to mbist_wrap/rtl_v + fpga_v
+
+## GitHub
 - Repo: `github.com/GentleBreezeBlow/fc_fpga`
-- Commits: `222b468` (30 files) → `e513f32` (slim CLAUDE.md) → `2c0c6e5` (mbist_wrap fpga_v gen)
 - Windows 凭据管理器已存 cred，`git push` 即可

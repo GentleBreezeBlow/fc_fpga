@@ -5,6 +5,7 @@ from the original script with Python-native string / file operations.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Optional
@@ -17,6 +18,7 @@ from .config import (
     FPGA_SET_PROPERTY_SCE,
     FPGA_XDC_PROPERTY,
     RE_VERILOG_EXT,
+    SKIP_DIRS,
 )
 from .scanner import DesignScanner
 
@@ -60,26 +62,30 @@ def generate_filelist(
     for design_dir in design_dirs:
         if not design_dir.is_dir():
             continue
-        for root, dirs, _files in design_dir.walk():
+        for root, dirs, _files in os.walk(str(design_dir)):
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
             root_path = Path(root)
 
             stub_dir = root_path / "stub_v"
             if stub_dir.is_dir():
                 for f in stub_dir.iterdir():
                     if f.is_file() and RE_VERILOG_EXT.search(f.suffix):
-                        stub_files[f.name] = str(f)
+                        stub_files[f.name] = str(f).replace("\\", "/")
 
             fpga_dir = root_path / "fpga_v"
             if fpga_dir.is_dir():
                 for f in fpga_dir.iterdir():
                     if f.is_file() and RE_VERILOG_EXT.search(f.suffix):
-                        fpga_files[f.name] = str(f)
+                        fpga_files[f.name] = str(f).replace("\\", "/")
 
     # ---- Read source filelist ---------------------------------------------
     if not source_filelist.is_file():
         raise FileNotFoundError(f"Source filelist not found: {source_filelist}")
 
     lines = _read_source_filelist(source_filelist, use_stub_list, stub_files)
+
+    # ---- Strip all mbist_wrap/rtl_v entries (replaced by fpga_v below) ----
+    lines = [ln for ln in lines if "/mbist_wrap/rtl_v/" not in ln.replace("\\", "/")]
 
     # ---- Replace RTL entries with FPGA / stub entries ---------------------
     for name, full_path in fpga_files.items():
@@ -90,7 +96,7 @@ def generate_filelist(
         if tb_path.is_dir():
             for f in sorted(tb_path.iterdir()):
                 if f.is_file() and RE_VERILOG_EXT.search(f.suffix):
-                    lines = _replace_file_entry(lines, f.name, str(f))
+                    lines = _replace_file_entry(lines, f.name, str(f).replace("\\", "/"))
 
     # ---- Verify fpga_v file count -----------------------------------------
     # Collect TB fpga_v files (added to filelist in the next step)
@@ -119,8 +125,8 @@ def generate_filelist(
 
     output = f"{header}\n{body}\n}}\n{footer}\n"
 
-    # Substitute environment-variable shortcuts back to Tcl variables
-    output = _substitute_env_vars(output)
+    # Expand Tcl variable references to absolute paths
+    output = _expand_tcl_vars(output)
 
     output_path.write_text(output, encoding="utf-8")
     logger.info("Wrote FPGA filelist: %s (%d entries)", output_path, len(lines))
@@ -208,4 +214,24 @@ def _substitute_env_vars(text: str) -> str:
         env_val = os.getenv(env_var, "")
         if env_val:
             text = text.replace(env_val, tcl_var)
+    return text
+
+
+def _expand_tcl_vars(text: str) -> str:
+    """Replace Tcl-style ``$VAR`` / ``${VAR}`` references with absolute paths.
+
+    E.g. ``${SOC_DESIGN_DIR}/foo -> /proj/soc/design/foo``.
+
+    Paths are normalized to forward slashes for cross-platform consistency.
+    """
+    import os
+    for env_var, _tcl_var in ENV_TO_FILELIST_VAR.items():
+        env_val = os.getenv(env_var, "")
+        if not env_val:
+            continue
+        env_val = env_val.replace("\\", "/")
+        # Handle ${VAR} form (must precede $VAR to avoid double-match)
+        text = text.replace(f"${{{env_var}}}", env_val)
+        # Handle $VAR form (no braces)
+        text = text.replace(f"${env_var}", env_val)
     return text

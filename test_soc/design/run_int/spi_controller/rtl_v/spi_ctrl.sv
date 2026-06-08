@@ -19,9 +19,8 @@ module spi_ctrl #(
   input  wire                    cpha       // NEW: clock phase config
 );
 
-  //===========================================================
-  // Clock divider — CHANGED: was CLK_DIV, now CLK_DIV/2
-  //===========================================================
+  wire reg1;
+
   reg [7:0] clk_cnt;
   wire clk_en = (clk_cnt == (CLK_DIV/2) - 1);   // FIXED: was CLK_DIV-1 (wrong!)
 
@@ -60,7 +59,6 @@ module spi_ctrl #(
 
   // CPOL/CPHA controlled SCLK
   assign sclk = (state == SHIFT) ? (cpol ^ (clk_cnt >= CLK_DIV/4) ? clk : ~clk) : cpol;
-
   assign done = (state == DONE);
   assign cs_n = (state == IDLE);
 

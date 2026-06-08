@@ -83,6 +83,9 @@ MEM_PORT_PATTERNS: dict[str, re.Pattern] = {
 # Stub-file suffix pattern
 RE_STUB_SUFFIX = re.compile(r"_stub\b")
 
+# Directory names to exclude from design traversal (non-project build/tool dirs)
+SKIP_DIRS = frozenset({"tool_data"})
+
 
 # ---------------------------------------------------------------------------
 # Tcl property templates (for filelist.f)
@@ -113,7 +116,7 @@ set_property FILE_TYPE {Verilog Header} [get_files $CPPE_CPUSYSTEM_DIR/CM4_INTEG
 
 FPGA_XDC_PROPERTY = """\
 set_property top cppe_fpga_top [current_fileset]
-add_files -fileset constrs_1 -norecurse $SOC_TB_DIR/fpga/constraints/cppe_cons.xdc"""
+add_files -fileset constrs_1 -norecurse $SOC_TB_DIR/fpga/constraints/${PROJ_NAME}_cons.xdc"""
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +134,7 @@ ENV_TO_FILELIST_VAR: dict[str, str] = {
     "CPPE_CPUSYSTEM_DIR":   "${CPPE_CPUSYSTEM_DIR}",
     "CPPE_PERIPH_DIR":      "${CPPE_PERIPH_DIR}",
     "CPPE_TOP_DIR":         "${CPPE_TOP_DIR}",
+    "PROJ_NAME":            "${PROJ_NAME}",
 }
 
 

@@ -7,9 +7,11 @@ Wraps selected instance blocks with `` `ifdef FPGA_SYN `` (tie outputs to 0)
 from __future__ import annotations
 
 import logging
+import os
 import re
 from pathlib import Path
 
+from .config import SKIP_DIRS
 from .merger import _extract_module_header
 from .scanner import DesignScanner
 
@@ -26,18 +28,18 @@ def strip_instances(
 ) -> int:
     """Remove *inst_names* from *fpga_path*, wrapping each with output tie-off.
 
-    For each instance:
-    1. Locate its instantiation block in *fpga_path*.
-    2. Find the module's RTL source to determine output port directions.
-    3. Generate `` `ifdef FPGA_SYN `` assigns (tie outputs to 0) with the
-       original instantiation in the `` `else `` branch.
-    4. Write back the modified file.
+    Also **un-strips** any previously stripped instances that are not in
+    *inst_names* (removes the ``ifdef FPGA_SYN ... endif`` wrapper and
+    restores the original instantiation).
 
-    Returns the number of instances successfully stripped.
+    Returns the number of instances newly stripped.
     """
     text = fpga_path.read_text(encoding="utf-8", errors="replace")
-    fpga_dir = fpga_path.parent
 
+    # ---- Phase 0: Un-strip instances no longer in the config ------------
+    text, unstrip_count = _unstrip_removed(text, inst_names, fpga_path)
+
+    # ---- Phase 1: Strip new instances -----------------------------------
     stripped = 0
     for inst_name in inst_names:
         parsed = _parse_instance_body(text, inst_name)
@@ -103,10 +105,67 @@ def strip_instances(
         text = text[:start] + replacement + text[end:]
         stripped += 1
 
-    if stripped > 0:
+    if stripped > 0 or unstrip_count > 0:
         fpga_path.write_text(text, encoding="utf-8")
 
     return stripped
+
+
+# ===========================================================================
+# Un-strip (restore) instances no longer in the active config
+# ===========================================================================
+
+_STRIPPED_BLOCK_RE = re.compile(
+    r"(?P<indent>[ \t]*)`ifdef\s+FPGA_SYN\s*\n"
+    r"(?P<wrapper>.*?)"
+    r"(?P=indent)`else\s*\n"
+    r"(?P<body>.*?)\n"
+    r"(?P=indent)`endif",
+    re.DOTALL | re.MULTILINE,
+)
+
+_INST_NAME_FROM_BODY_RE = re.compile(
+    r"\b(\w+)\s+(?:#\s*\(.*?\)\s+)?(\w+)\s*\(",
+)
+
+
+def _unstrip_removed(text: str, keep_instances: list[str], fpga_path: Path) -> tuple[str, int]:
+    """Remove ``ifdef FPGA_SYN ... endif`` wrappers from instances not in
+    *keep_instances*, restoring the original instantiation.
+
+    Returns ``(modified_text, unstrip_count)``.
+    """
+    unstrip_count = 0
+    changed = True
+    while changed:
+        changed = False
+        for m in _STRIPPED_BLOCK_RE.finditer(text):
+            body = m.group("body")
+
+            # Extra guard: only match blocks that look like strip-ips output
+            body_stripped = body.strip()
+            if not body_stripped:
+                continue
+
+            # Try to find instance name from the body
+            inst_match = _INST_NAME_FROM_BODY_RE.search(body_stripped)
+            if inst_match is None:
+                continue
+
+            inst_name = inst_match.group(2)
+            if inst_name in keep_instances:
+                continue
+
+            # This instance is NOT in the current config -- restore it
+            logger.info(
+                "Un-stripping %s from %s (removed from config)",
+                inst_name, fpga_path.name,
+            )
+            text = text[:m.start()] + body_stripped + "\n" + text[m.end():]
+            unstrip_count += 1
+            changed = True
+            break  # restart iteration after modifying text
+    return text, unstrip_count
 
 
 # ===========================================================================
@@ -332,7 +391,8 @@ def _find_module_rtl(
     for design_dir in scanner.design_dirs:
         if not design_dir.is_dir():
             continue
-        for root, dirs, _files in design_dir.walk():
+        for root, dirs, _files in os.walk(str(design_dir)):
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
             root_path = Path(root)
             for ref_sub in scanner.ref_subdirs:
                 rtl_dir = root_path / ref_sub

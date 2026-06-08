@@ -7,11 +7,12 @@ function with a single, reusable :class:`DesignScanner`.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Iterator, Optional
 
-from .config import RE_STUB_SUFFIX, RE_VERILOG_EXT
+from .config import RE_STUB_SUFFIX, RE_VERILOG_EXT, SKIP_DIRS
 
 logger = logging.getLogger(__name__)
 
@@ -352,12 +353,21 @@ class DesignScanner:
     # Public API
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _filter_skip_dirs(dirs: list[str]) -> None:
+        """Remove *SKIP_DIRS* from *dirs* (in-place) to prevent os.walk descent."""
+        to_remove = [d for d in dirs if d in SKIP_DIRS]
+        for d in to_remove:
+            dirs.remove(d)
+            logger.debug("Skipping non-project directory: %s", d)
+
     def iter_folders_with_fpga_or_stub(self) -> Iterator[Path]:
         """Yield directories that contain a ``fpga_v`` or ``stub_v`` subdir."""
         for design_dir in self.design_dirs:
             if not design_dir.is_dir():
                 continue
-            for root, dirs, _files in design_dir.walk():
+            for root, dirs, _files in os.walk(str(design_dir)):
+                self._filter_skip_dirs(dirs)
                 if self.FPGA_DIR in dirs or self.STUB_DIR in dirs:
                     yield Path(root)
 
@@ -407,7 +417,8 @@ class DesignScanner:
         for design_dir in self.design_dirs:
             if not design_dir.is_dir():
                 continue
-            for root, dirs, _files in design_dir.walk():
+            for root, dirs, _files in os.walk(str(design_dir)):
+                self._filter_skip_dirs(dirs)
                 if self.FPGA_DIR in dirs:
                     fpga_dir = Path(root) / self.FPGA_DIR
                     result.extend(self._verilog_files(fpga_dir))
@@ -419,7 +430,8 @@ class DesignScanner:
         for design_dir in self.design_dirs:
             if not design_dir.is_dir():
                 continue
-            for root, dirs, _files in design_dir.walk():
+            for root, dirs, _files in os.walk(str(design_dir)):
+                self._filter_skip_dirs(dirs)
                 if self.STUB_DIR in dirs:
                     stub_dir = Path(root) / self.STUB_DIR
                     result.extend(self._verilog_files(stub_dir))
@@ -451,7 +463,8 @@ class DesignScanner:
         for design_dir in self.design_dirs:
             if not design_dir.is_dir():
                 continue
-            for root, dirs, _files in design_dir.walk():
+            for root, dirs, _files in os.walk(str(design_dir)):
+                self._filter_skip_dirs(dirs)
                 for rtl_sub in self.ref_subdirs:
                     rtl_dir = Path(root) / rtl_sub
                     if not rtl_dir.is_dir():

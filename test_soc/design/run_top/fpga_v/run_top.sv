@@ -51,6 +51,10 @@ module run_top #(
   wire [31:0] run_irq_out;
   wire [31:0] platform_irq_src;
 
+`ifdef FPGA_SYN
+  wire run_clk_buf;
+  BUFG bufg_run (.O(run_clk_buf), .I(clk));
+`endif
   //===========================================================
   // Sub-module instantiations
   //===========================================================
@@ -85,10 +89,6 @@ module run_top #(
     .dma_clk_1  (dma_clk_1),
     .dma_cen_1  (dma_cen_1),
     .dma_a_1    (dma_a_1),
-`ifdef FPGA_SYN
-  wire run_clk_buf;
-  BUFG bufg_run (.O(run_clk_buf), .I(clk));
-`endif
     .dma_d_1    (dma_d_1),
     .dma_wen_1  (dma_wen_1),
     .dma_q_1    (dma_q_1),

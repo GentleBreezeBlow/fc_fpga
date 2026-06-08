@@ -47,6 +47,9 @@ module i2c_ctrl #(
     end
   end
 
+
+  
+
   assign scl     = scl_reg;
   assign sda     = sda_oe ? sda_out : 1'bz;
   assign busy    = busy_reg;

@@ -779,7 +779,9 @@ def run():
         r = merger.merge(rtl, fpga)
         results.append(r)
         tag = "SYNCED" if not r.is_equal else "(no change)"
-        w = f"  [WARN blocks: {r.fpga_block_warnings}]" if r.fpga_block_warnings else ""
+        w = ""
+        if r.fpga_block_warnings:
+            w = f"  [WARN blocks: {r.fpga_block_warnings}]  MANUAL REVIEW: {fpga.resolve()}"
         rel = fpga.relative_to(HERE / "test_soc" / "design")
         print(f"  {tag:12s}  {rel}{w}")
 
@@ -1002,12 +1004,8 @@ def run():
     {mbist_fpga}/
     {report_dir}/all.html
 
-  Open report:  start {report_dir / 'all.html'}
+  Report: {report_dir / 'all.html'}
 """)
-    import webbrowser
-    all_html = report_dir / "all.html"
-    if all_html.exists():
-        webbrowser.open(str(all_html))
 
 
 if __name__ == "__main__":

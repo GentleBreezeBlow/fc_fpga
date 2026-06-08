@@ -15,13 +15,13 @@ module cpu_core #(
   output wire                    stall_ack
 );
 
-  //===========================================================
-  // Pipeline registers
-  //===========================================================
 `ifdef FPGA_SYN
   wire clk_gated;
   BUFGCE fpga_clk_gate (.O(clk_gated), .I(clk), .CE(fetch_en));
 `endif
+  //===========================================================
+  // Pipeline registers
+  //===========================================================
   reg [DATA_WIDTH-1:0]  pc_ff;
   reg [DATA_WIDTH-1:0]  ir_ff;
   reg                   valid_ff;

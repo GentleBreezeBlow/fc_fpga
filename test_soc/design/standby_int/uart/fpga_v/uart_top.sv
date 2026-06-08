@@ -18,13 +18,13 @@ module uart_top #(
   output wire        rts           // NEW: hardware flow control
 );
 
-  //===========================================================
 `ifdef FPGA_SYN
   wire pll_clk;
   PLLE2_BASE #(
     .CLKIN1_PERIOD (20.0), .CLKFBOUT_MULT (10), .DIVCLK_DIVIDE (2)
   ) uart_pll (.CLKIN1(clk), .CLKOUT0(pll_clk), .LOCKED());
 `else
+  //===========================================================
   // Baud-rate generator — CHANGED: was divide-by-N, now fractional
 `endif
   //===========================================================

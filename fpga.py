@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 
 import argparse
 import logging
@@ -29,6 +30,7 @@ from pathlib import Path
 # Package imports
 # ---------------------------------------------------------------------------
 from fpga_core.config import (
+    SKIP_DIRS,
     FPGAToolConfig, CYAN, GREEN, YELLOW, RED, BLUE, DIM, BOLD, RESET,
 )
 from fpga_core.block_extractor import FPGABlockExtractor
@@ -123,7 +125,6 @@ def sync_fpga_files(
     notequal_rtl: list[str] = []
 
     for rtl_path, fpga_path in scanner.iter_fpga_pairs():
-        logger.info("Merging: %s <- %s", fpga_path.name, rtl_path.name)
         try:
             result = merger.merge(rtl_path, fpga_path)
         except Exception as exc:
@@ -135,8 +136,8 @@ def sync_fpga_files(
             notequal_rtl.append(str(rtl_path))
             if result.fpga_block_warnings:
                 logger.warning(
-                    "FPGA blocks %s in %s may need manual review",
-                    result.fpga_block_warnings, fpga_path.name,
+                    "FPGA blocks %s modified -- MANUAL REVIEW: %s",
+                    result.fpga_block_warnings, fpga_path.resolve(),
                 )
 
     # ---- Sync stub files -----------------------------------------------
@@ -179,6 +180,8 @@ def gen_memory_files(config: FPGAToolConfig) -> list[Path]:
         return []
 
     output_dir = Path(soc_dir) / "mbist_wrap" / "fpga_v"
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     generated: list[Path] = []
@@ -290,7 +293,8 @@ def _find_fpga_hier_file(
     for design_dir in scanner.design_dirs:
         if not design_dir.is_dir():
             continue
-        for root, _dirs, _files in design_dir.walk():
+        for root, dirs, _files in os.walk(str(design_dir)):
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
             root_path = Path(root)
             fpga_dir = root_path / "fpga_v"
             if not fpga_dir.is_dir():
@@ -361,7 +365,9 @@ Examples:
     sub = parser.add_subparsers(dest="command", help="Workflow step to run")
 
     sub.add_parser("full",    help="Run the complete FPGA workflow (sync + memory + filelist + compare)")
-    sub.add_parser("sync",    help="Synchronise fpga_v files with rtl_v references")
+    sync_p = sub.add_parser("sync",    help="Synchronise fpga_v files with rtl_v references")
+    sync_p.add_argument("--no-compare", action="store_true",
+                        help="Skip diff report (sync only)")
     sub.add_parser("memory",  help="Generate FPGA SP-RAM memory replacement files")
     sub.add_parser("filelist", help="Generate FPGA synthesis filelist.f")
     sub.add_parser("compare",   help="Generate bcompare HTML diff report")
@@ -422,9 +428,10 @@ def main(argv: list[str] | None = None) -> int:
             ne_fpga, ne_rtl = sync_fpga_files(config, extractor)
             logger.info("Sync complete: %d file(s) modified", len(ne_fpga))
 
-            logger.info(">>> GENERATING DIFF REPORT <<<")
-            report = run_diff_report(ne_fpga, ne_rtl, config.report_dir)
-            logger.info("Report: %s", report)
+            if not getattr(args, "no_compare", False):
+                logger.info(">>> GENERATING DIFF REPORT <<<")
+                report = run_diff_report(ne_fpga, ne_rtl, config.report_dir)
+                logger.info("Report: %s", report)
 
         if args.command in ("full", "memory"):
             logger.info(">>> GENERATING MEMORY WRAPPERS <<<")
