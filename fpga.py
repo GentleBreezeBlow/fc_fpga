@@ -30,7 +30,6 @@ from pathlib import Path
 # Package imports
 # ---------------------------------------------------------------------------
 from fpga_core.config import (
-    SKIP_DIRS,
     FPGAToolConfig, CYAN, GREEN, YELLOW, RED, BLUE, DIM, BOLD, RESET,
 )
 from fpga_core.block_extractor import FPGABlockExtractor
@@ -125,6 +124,9 @@ def sync_fpga_files(
     notequal_rtl: list[str] = []
 
     for rtl_path, fpga_path in scanner.iter_fpga_pairs():
+        # mbist_wrap files are managed by memory generation, not by sync
+        if "mbist_wrap" in str(fpga_path):
+            continue
         try:
             result = merger.merge(rtl_path, fpga_path)
         except Exception as exc:
@@ -265,45 +267,28 @@ def _check_required_env() -> None:
         raise SystemExit("env vars not set: " + ", ".join(missing))
 
 
-def list_hierarchy_ips(config: FPGAToolConfig) -> None:
-    """List all IPs instantiated in run_top / standby_top / run_int / standby_int."""
+def list_hierarchy_ips(config: FPGAToolConfig, output_path: Path | None = None) -> None:
+    """List all IPs instantiated in hierarchy modules and write to *output_path*."""
+    logger = logging.getLogger(__name__)
+    if output_path is None:
+        output_path = Path("hierarchy_ips.txt")
     scanner = DesignScanner(config.design_dirs)
     result = scanner.list_hierarchy_ips()
 
     if not result:
-        print("No hierarchy modules found (run_top, standby_top, run_int, standby_int).")
+        print("No hierarchy modules found.")
         return
 
-    modules_order = ["standby_top", "run_top", "standby_int", "run_int"]
-    for mod_name in modules_order:
-        entries = result.get(mod_name)
-        if entries is None:
-            continue
-        print(f"\n[{mod_name}]")
+    lines: list[str] = []
+    for mod_path in sorted(result):
+        entries = result[mod_path]
+        lines.append(f"\n[{mod_path}]")
         for ip_mod, ip_inst, src in entries:
-            print(f"  {ip_mod:20s}  {ip_inst}")
+            lines.append(f"  {ip_mod:20s}  {ip_inst}")
 
+    output_path.write_text("\n".join(lines).lstrip() + "\n", encoding="utf-8")
+    logger.info("Wrote hierarchy IPs to %s (%d paths)", output_path, len(result))
 
-def _find_fpga_hier_file(
-    scanner: DesignScanner,
-    hier_module: str,
-) -> Path | None:
-    """Locate ``<hier_module>/fpga_v/<hier_module>.sv`` in design dirs."""
-    candidates = [f"{hier_module}.sv", f"{hier_module}.v"]
-    for design_dir in scanner.design_dirs:
-        if not design_dir.is_dir():
-            continue
-        for root, dirs, _files in os.walk(str(design_dir)):
-            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
-            root_path = Path(root)
-            fpga_dir = root_path / "fpga_v"
-            if not fpga_dir.is_dir():
-                continue
-            for c in candidates:
-                cpath = fpga_dir / c
-                if cpath.is_file():
-                    return cpath
-    return None
 
 
 def _parse_strip_file(file_path: str) -> list[tuple[str, list[str]]]:
@@ -314,27 +299,93 @@ def _parse_strip_file(file_path: str) -> list[tuple[str, list[str]]]:
         # comments ignored
         <hier_module> : <inst1> <inst2> ...
 
+    ``<hier_module>`` can be a flat module name (``run_int``) or a dotted
+    path of instance names (``run_top.u_run_int``) for disambiguation.
+
     Example::
 
-        run_int: spi2 spi3
+        run_int: spi1 spi2
+        run_top.u_run_int: spi1
         standby_int: gpio
     """
     result: list[tuple[str, list[str]]] = []
+    merged: dict[str, list[str]] = {}
     with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
         for raw in fh:
-            # Strip comments
             line = raw.split("#", 1)[0].strip()
             if not line:
                 continue
-            # Split on colon
             if ":" not in line:
                 continue
             hier_module, rest = line.split(":", 1)
             hier_module = hier_module.strip()
             instances = rest.strip().split()
             if hier_module and instances:
-                result.append((hier_module, list(instances)))
-    return result
+                merged.setdefault(hier_module, []).extend(instances)
+    return [(k, v) for k, v in merged.items()]
+
+
+def _run_strip_from_config(config: FPGAToolConfig, conf_path: str) -> None:
+    """Run strip-ips using a batch config file (used by ``full`` workflow)."""
+    _log = logging.getLogger(__name__)
+    _log.info("Loading strip config: %s", conf_path)
+    scanner = DesignScanner(config.design_dirs)
+    tasks = _parse_strip_file(conf_path)
+    if not tasks:
+        _log.info("No valid entries in %s", conf_path)
+        return
+    _log.info("Strip tasks: %d module(s)", len(tasks))
+    for hier_module, instances in tasks:
+        _log.info("  [%s] %d instance(s): %s", hier_module, len(instances), ", ".join(instances))
+    total = 0
+    for hier_module, instances in tasks:
+        _log.info("Resolving fpga_v for: %s", hier_module)
+        fpga_path = scanner.resolve_fpga_path(hier_module)
+        if fpga_path is None:
+            _log.error("fpga_v file not found: %s", hier_module)
+            continue
+        _log.info("  -> %s", fpga_path)
+        n = strip_instances(fpga_path, instances, scanner)
+        _log.info("Stripped %d instance(s) from %s", n, hier_module)
+        total += n
+    if total == 0:
+        _log.info("No instances were stripped")
+
+
+def _run_strip(config: FPGAToolConfig, args, conf_path: str) -> None:
+    """Run strip-ips in CLI mode (parses args for hier_module + instances)."""
+    _log = logging.getLogger(__name__)
+    scanner = DesignScanner(config.design_dirs)
+    tasks: list[tuple[str, list[str]]] = []
+
+    if args.file:
+        tasks = _parse_strip_file(args.file)
+        if not tasks:
+            _log.error("No valid entries found in %s", args.file)
+            return
+
+    if args.hier_module:
+        if not args.instances:
+            _log.error("No instance names provided for %s", args.hier_module)
+            return
+        tasks.append((args.hier_module, list(args.instances)))
+
+    if not tasks:
+        _log.error("Specify hier_module + instances, or use --file")
+        return
+
+    total = 0
+    for hier_module, instances in tasks:
+        fpga_path = scanner.resolve_fpga_path(hier_module)
+        if fpga_path is None:
+            _log.error("fpga_v file not found: %s", hier_module)
+            continue
+        n = strip_instances(fpga_path, instances, scanner)
+        _log.info("Stripped %d instance(s) from %s", n, hier_module)
+        total += n
+
+    if total == 0:
+        _log.info("No instances were stripped")
 
 
 # ---------------------------------------------------------------------------
@@ -371,18 +422,24 @@ Examples:
     sub.add_parser("memory",  help="Generate FPGA SP-RAM memory replacement files")
     sub.add_parser("filelist", help="Generate FPGA synthesis filelist.f")
     sub.add_parser("compare",   help="Generate bcompare HTML diff report")
-    sub.add_parser("list-ips", help="List IPs instantiated in hierarchy modules")
+    list_ips_p = sub.add_parser("list-ips", help="List IPs instantiated in hierarchy modules")
+    list_ips_p.add_argument(
+        "-o", "--output",
+        default="hierarchy_ips.txt",
+        help="Output file path (default: hierarchy_ips.txt)",
+    )
 
     strip_parser = sub.add_parser(
         "strip-ips",
         help="Remove IP instances from fpga_v with output tie-off",
         epilog="Examples:\n"
                "  python fpga.py strip-ips run_int spi2\n"
+               "  python fpga.py strip-ips run_top.u_run_int spi1\n"
                "  python fpga.py strip-ips --file strip_ips.conf",
     )
     strip_parser.add_argument(
         "hier_module", nargs="?",
-        help="Hierarchy module name (e.g. run_int, standby_top)",
+        help="Hierarchy module (e.g. run_int) or dotted path (e.g. run_top.u_run_int)",
     )
     strip_parser.add_argument(
         "instances", nargs="*",
@@ -443,46 +500,19 @@ def main(argv: list[str] | None = None) -> int:
             fl_path = gen_fpga_filelist(config)
             logger.info("Filelist: %s", fl_path)
 
+        if args.command in ("full", "strip-ips"):
+            strip_config = getattr(args, "file", None) or "strip_ips.conf"
+            if args.command == "full":
+                logger.info(">>> STRIPPING IP INSTANCES <<<")
+                if not Path(strip_config).is_file():
+                    logger.info("No strip_ips.conf found -- skipping strip-ips")
+                else:
+                    _run_strip_from_config(config, strip_config)
+            else:
+                _run_strip(config, args, strip_config)
+
         if args.command == "list-ips":
-            list_hierarchy_ips(config)
-
-        if args.command == "strip-ips":
-            scanner = DesignScanner(config.design_dirs)
-
-            # Build task list: [(hier_module, [instances]), ...]
-            tasks: list[tuple[str, list[str]]] = []
-
-            if args.file:
-                tasks = _parse_strip_file(args.file)
-                if not tasks:
-                    logger.error("No valid entries found in %s", args.file)
-                    return 3
-
-            if args.hier_module:
-                if not args.instances:
-                    logger.error("No instance names provided for %s", args.hier_module)
-                    return 3
-                tasks.append((args.hier_module, list(args.instances)))
-
-            if not tasks:
-                logger.error("Specify hier_module + instances, or use --file")
-                return 3
-
-            total = 0
-            for hier_module, instances in tasks:
-                fpga_path = _find_fpga_hier_file(scanner, hier_module)
-                if fpga_path is None:
-                    logger.error(
-                        "fpga_v file not found for hierarchy module: %s",
-                        hier_module,
-                    )
-                    continue
-                n = strip_instances(fpga_path, instances, scanner)
-                logger.info("Stripped %d instance(s) from %s", n, hier_module)
-                total += n
-
-            if total == 0:
-                logger.info("No instances were stripped")
+            list_hierarchy_ips(config, Path(args.output))
 
     except Exception as exc:
         logger.error("Fatal: %s", exc, exc_info=args.verbose)

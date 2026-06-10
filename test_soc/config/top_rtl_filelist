@@ -20,6 +20,8 @@ $SOC_DESIGN_DIR/platform_int/rtl_v/platform_int.sv
 $SOC_DESIGN_DIR/mbist_wrap/rtl_v/sram_256x32_wrap.sv
 $SOC_DESIGN_DIR/mbist_wrap/rtl_v/rom_1024x16_wrap.sv
 $SOC_DESIGN_DIR/mbist_wrap/rtl_v/cppe_flexcan_dma_pse_wrap.sv
+$SOC_DESIGN_DIR/mbist_wrap/rtl_v/cache_wrap.sv
+$SOC_DESIGN_DIR/mbist_wrap/rtl_v/cppe_cache_wrap.sv
 // Standby domain peripherals
 $SOC_DESIGN_DIR/standby_int/rtl_v/standby_int.sv
 $SOC_DESIGN_DIR/standby_int/uart/rtl_v/uart_top.sv

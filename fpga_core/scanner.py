@@ -324,7 +324,28 @@ def _backwards_scan_module(text: str, pos: int) -> str | None:
 # Hierarchy module names we look for when listing IPs
 # ---------------------------------------------------------------------------
 
-_HIER_MODULES = {"run_top", "standby_top", "run_int", "standby_int"}
+# Explicit hierarchy paths for ``list_hierarchy_ips``.
+#
+# Each entry is a dotted path using **instance** names (not module names).
+# The first token is the top-level module name; every subsequent token is
+# an instance name found in the previous level's instantiations.
+#
+#   "run_top.u_run_int"                 → IPs under run_top → u_run_int
+#   "run_top.u_run_int.u_cppe.u_plat"   → IPs under cppe's platform_int
+#
+# The scanner walks the chain: finds each module's RTL, parses its
+# instantiations, locates the next instance, resolves its module to find
+# the RTL for the next level, and finally extracts instances from the leaf.
+_HIER_MODULES: set[str] = {
+    "standby_top",
+    "standby_top.u_standby_int",
+    "run_top",
+    "run_top.u_run_int",
+    "run_top.u_run_int.u_cppe",
+    "run_top.u_run_int.u_cppe.u_cppe_periph",
+    "run_top.u_run_int.u_cppe.u_platform_int",
+    "run_top.u_platform_int",
+}
 
 
 class DesignScanner:
@@ -359,7 +380,6 @@ class DesignScanner:
         to_remove = [d for d in dirs if d in SKIP_DIRS]
         for d in to_remove:
             dirs.remove(d)
-            logger.debug("Skipping non-project directory: %s", d)
 
     def iter_folders_with_fpga_or_stub(self) -> Iterator[Path]:
         """Yield directories that contain a ``fpga_v`` or ``stub_v`` subdir."""
@@ -448,39 +468,202 @@ class DesignScanner:
             p for p in search_path.rglob("*_wrap.sv")
         ]
 
-    def list_hierarchy_ips(self) -> dict[str, list[tuple[str, str, str]]]:
-        """Scan ``run_top``, ``standby_top``, ``run_int``, ``standby_int``
-        RTL files and return their instantiated module names.
+    # ------------------------------------------------------------------
+    # Hierarchy path resolution (shared by list-ips and strip-ips)
+    # ------------------------------------------------------------------
+
+    def _walk_hierarchy_path(self, path: str) -> Path | None:
+        """Walk a dotted ``"A.B.C"`` chain and return the RTL path of the leaf.
+
+        The first token is a **module** name (the top).  Every subsequent
+        token is an **instance** name found in the previous level's
+        instantiations.
+
+        Returns ``None`` if any step in the chain cannot be resolved.
+        """
+        tokens = path.split(".")
+        rtl = self._find_rtl_by_module_name(tokens[0])
+        if rtl is None:
+            logger.debug("Top module '%s' not found for path '%s'", tokens[0], path)
+            return None
+
+        for i, step in enumerate(tokens[1:], start=1):
+            instances = self._cached_extract_instances(rtl)
+            found_mod = None
+            for mod_name, inst_name in instances:
+                if inst_name == step:
+                    found_mod = mod_name
+                    break
+            if found_mod is None:
+                logger.debug(
+                    "Instance '%s' not found in %s (path '%s')",
+                    step, tokens[i - 1], path,
+                )
+                return None
+            rtl = self._find_rtl_by_module_name(found_mod)
+            if rtl is None:
+                logger.debug("No RTL for instance '%s' → module '%s' (path '%s')",
+                             step, found_mod, path)
+                return None
+        return rtl
+
+    def _cached_extract_instances(self, rtl_path: Path) -> list[tuple[str, str]]:
+        """Cached wrapper for :func:`extract_instances` — avoids re-parsing
+        the same file when walked from multiple hierarchy paths.
+        """
+        key = str(rtl_path)
+        if not hasattr(self, "_inst_cache"):
+            self._inst_cache: dict[str, list[tuple[str, str]]] = {}
+        if key not in self._inst_cache:
+            self._inst_cache[key] = extract_instances(rtl_path)
+        return self._inst_cache[key]
+
+    def _find_matching_paths(self, flat_name: str) -> list[str]:
+        """Return :data:`_HIER_MODULES` paths whose **leaf module name**
+        matches *flat_name* (cached — only walks the hierarchy once).
+        """
+        if not hasattr(self, "_match_cache"):
+            self._match_cache: dict[str, list[str]] = {}
+        if flat_name in self._match_cache:
+            return self._match_cache[flat_name]
+
+        matches: list[str] = []
+        for path in _HIER_MODULES:
+            root = path.split(".")[0]
+            if self._find_rtl_by_module_name(root) is None:
+                logger.debug("  skip '%s': root '%s' not in RTL cache", path, root)
+                continue
+            logger.debug("  walking: %s", path)
+            rtl = self._walk_hierarchy_path(path)
+            if rtl is not None and rtl.stem == flat_name:
+                matches.append(path)
+            else:
+                logger.debug("  no match for '%s': leaf=%s", path, rtl.stem if rtl else "(none)")
+        self._match_cache[flat_name] = matches
+        return matches
+
+    def resolve_fpga_path(self, hier_path: str) -> Path | None:
+        """Resolve a hierarchy path to its ``fpga_v`` file.
+
+        **Dotted path** — ``"run_top.u_run_int"`` using instance names
+        → ``.../run_int/fpga_v/run_int.sv``.
+
+        **Flat name** — ``"run_int"`` (module name) — is looked up in
+        :data:`_HIER_MODULES`.  If *exactly one* entry ends at a module
+        with that name, it is used; if zero or more than one, an error
+        is logged and the caller must provide an explicit dotted path.
+        """
+        if "." in hier_path:
+            rtl = self._walk_hierarchy_path(hier_path)
+            if rtl is None:
+                return None
+            leaf_stem = rtl.stem
+            fpga_dir = rtl.parent.parent / "fpga_v"
+            for ext in (".sv", ".v"):
+                candidate = fpga_dir / f"{leaf_stem}{ext}"
+                if candidate.is_file():
+                    return candidate
+            logger.debug("No fpga_v file for leaf module '%s'", hier_path)
+            return None
+
+        # Flat name — resolve via _HIER_MODULES
+        matches = self._find_matching_paths(hier_path)
+        if len(matches) == 0:
+            logger.error(
+                "Module '%s' not found in _HIER_MODULES. "
+                "Add it to _HIER_MODULES in scanner.py or use a dotted path.",
+                hier_path,
+            )
+            return None
+        if len(matches) > 1:
+            logger.error(
+                "Ambiguous module name '%s' matches multiple paths: %s. "
+                "Use an explicit dotted path (e.g. 'run_top.u_run_int').",
+                hier_path, ", ".join(matches),
+            )
+            return None
+        # Single match
+        matched = matches[0]
+        if "." not in matched:
+            # The match IS the flat name itself — look up fpga_v directly
+            rtl = self._find_rtl_by_module_name(matched)
+            if rtl is None:
+                return None
+            fpga_dir = rtl.parent.parent / "fpga_v"
+            for ext in (".sv", ".v"):
+                candidate = fpga_dir / f"{rtl.stem}{ext}"
+                if candidate.is_file():
+                    return candidate
+            return None
+        # Dotted match — recurse (won't loop because matched contains ".")
+        return self.resolve_fpga_path(matched)
+
+    def list_hierarchy_ips(
+        self,
+        paths: list[str] | None = None,
+    ) -> dict[str, list[tuple[str, str, str]]]:
+        """List IPs instantiated under each dotted hierarchy *path*.
+
+        Each path uses **instance** names (e.g. ``run_top.u_run_int``) to
+        trace from the top to the leaf module whose instances are extracted.
+
+        Args:
+            paths:
+                Dotted hierarchy paths (e.g. ``"run_top.run_int"``).
+                Defaults to :data:`_HIER_MODULES`.
 
         Returns:
-            A dict keyed by hierarchy module name (e.g. ``"run_top"``).
-            Each value is a list of ``(module_name, instance_name, source_path)``
-            tuples found in that file.
+            Dict keyed by the exact *path* string.  Each value is a list of
+            ``(module_name, instance_name, source_path)`` tuples for
+            instances found in the leaf module.
         """
+        if paths is None:
+            paths = sorted(_HIER_MODULES)
+
         result: dict[str, list[tuple[str, str, str]]] = {}
 
-        # Find hierarchy RTL files across all design dirs
+        for path in paths:
+            rtl = self._walk_hierarchy_path(path)
+            if rtl is None:
+                continue
+            instances = extract_instances(rtl)
+            result[path] = [(mod, inst, str(rtl)) for mod, inst in instances]
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Hierarchy helpers
+    # ------------------------------------------------------------------
+
+    def _find_rtl_by_module_name(self, module_name: str) -> Path | None:
+        """Locate the RTL source file for *module_name* (cached — only walks
+        the design tree once, on the first call).
+        """
+        if not hasattr(self, "_rtl_name_cache"):
+            self._rtl_name_cache: dict[str, Path] = self._build_rtl_cache()
+        return self._rtl_name_cache.get(module_name)
+
+    def _build_rtl_cache(self) -> dict[str, Path]:
+        """Walk all design dirs once and return ``{module_name: rtl_path}``."""
+        logger.info("Building RTL cache — scanning design dirs (this runs once)...")
+        cache: dict[str, Path] = {}
         for design_dir in self.design_dirs:
             if not design_dir.is_dir():
+                logger.debug("  design dir not found: %s", design_dir)
                 continue
+            logger.debug("  scanning: %s", design_dir)
             for root, dirs, _files in os.walk(str(design_dir)):
                 self._filter_skip_dirs(dirs)
                 for rtl_sub in self.ref_subdirs:
                     rtl_dir = Path(root) / rtl_sub
                     if not rtl_dir.is_dir():
                         continue
-                    for sv_file in sorted(rtl_dir.iterdir()):
-                        if not sv_file.is_file():
-                            continue
-                        if not RE_VERILOG_EXT.search(sv_file.suffix):
-                            continue
-                        if sv_file.stem in _HIER_MODULES:
-                            instances = extract_instances(sv_file)
-                            result[sv_file.stem] = [
-                                (mod, inst, str(sv_file)) for mod, inst in instances
-                            ]
-
-        return result
+                    for f in rtl_dir.iterdir():
+                        if f.is_file() and f.suffix in (".sv", ".v"):
+                            if f.stem not in cache:
+                                cache[f.stem] = f
+        logger.info("RTL cache built: %d modules", len(cache))
+        return cache
 
     # ------------------------------------------------------------------
     # Internal helpers

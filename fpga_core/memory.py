@@ -201,6 +201,10 @@ def _is_ecc_split(module_name: str, data_width: int) -> tuple[int, int, int, str
         return (64, 9, 5, "default")
     if data_width == 104 and ("can" in name or "flexcan" in name):
         return (64, 8, 5, "default")
+    if data_width == 39 and "rom" in name:
+        return (32, 1, 7, "default")
+    if data_width == 72 and "rom" in name:
+        return (64, 1, 8, "default")
     if data_width == 36 and "cppe_cache" in name:
         return (32, 1, 4, "cache")
     return None
@@ -272,6 +276,7 @@ def _gen_ecc_split_body(
     data_bits: int,
     ecc_count: int,
     ecc_width: int,
+    ecc_we_expr: str | None = None,
 ) -> list[str]:
     """Generate Verilog lines for the data+ECC fpga_spram instances of one
     ECC-split memory block (DMA/CAN style).
@@ -279,6 +284,8 @@ def _gen_ecc_split_body(
     Returns a list of lines (already indented with ``  ``).
 
     * ``ram_we_sig`` -- name of the local ram_we wire (e.g. ``ram_we_0``).
+    * ``ecc_we_expr`` -- if given, used directly as ECC ram_we instead of
+      ``ram_we_sig[i]`` (e.g. for ROM where ECC is gated by GWEN alone).
     """
     lines: list[str] = []
     data_bytes = data_bits // 8
@@ -302,6 +309,11 @@ def _gen_ecc_split_body(
     lines.append(f"  );")
 
     # ---- ECC fpga_spram (ecc_width-bit each) in a generate loop ---------------
+    ecc_ram_we = (
+        ecc_we_expr
+        if ecc_we_expr is not None
+        else f"{ram_we_sig}[i_{block_idx}]"
+    )
     lines.append("")
     lines.append(f"  genvar i_{block_idx};")
     lines.append(f"  generate")
@@ -318,7 +330,7 @@ def _gen_ecc_split_body(
     lines.append(f"      .ram_clk  ({clk_name}),")
     lines.append(f"      .ram_addr ({addr_full}),")
     lines.append(f"      .ram_me   ({me_expr}),")
-    lines.append(f"      .ram_we   ({ram_we_sig}[i_{block_idx}]),")
+    lines.append(f"      .ram_we   ({ecc_ram_we}),")
     lines.append(f"      .ram_wdata({wdata_name}[{data_bits}+{ecc_width}*i_{block_idx}+:{ecc_width}]),")
     lines.append(f"      .ram_rdata({rdata_name}[{data_bits}+{ecc_width}*i_{block_idx}+:{ecc_width}])")
     lines.append(f"  );")
@@ -593,6 +605,81 @@ def _build_memory_port(
 # FPGA wrapper generation (mbist_wrap/rtl_v -> mbist_wrap/fpga_v)
 # ---------------------------------------------------------------------------
 
+def _is_uppercase(signals: dict) -> bool:
+    """Return ``True`` if port naming uses uppercase convention.
+
+    Examines the first character of ``clk``, ``addr``, ``q``, ``cen`` signal
+    names; ``CLK_0`` -> uppercase, ``clk_0`` -> lowercase.
+    """
+    for sig_type in ("clk", "addr", "q", "cen"):
+        if sig_type in signals:
+            name = signals[sig_type][0]
+            if name and name[0].isalpha():
+                return name[0].isupper()
+    return True  # default uppercase
+
+
+def _build_wdata_name(signals: dict, idx: int) -> str:
+    """Build the wdata port name from case convention: ``D_0`` or ``d_0``."""
+    return f"{'D' if _is_uppercase(signals) else 'd'}_{idx}"
+
+
+def _build_wen_name(signals: dict, idx: int) -> str:
+    """Build the WEN port name from case convention: ``WEN_0`` or ``wen_0``."""
+    return f"{'WEN' if _is_uppercase(signals) else 'wen'}_{idx}"
+
+
+def _build_gwen_name(signals: dict, idx: int) -> str:
+    """Build the GWEN port name from case convention: ``GWEN_0`` or ``gwen_0``."""
+    return f"{'GWEN' if _is_uppercase(signals) else 'gwen'}_{idx}"
+
+
+def _insert_port(module_header: str, direction: str, port_name: str, width: int) -> str:
+    """Insert a port declaration before the closing ``);`` of a Verilog module header.
+
+    Automatically adds a trailing comma to the last existing port line so the
+    insertion is syntactically valid.
+
+    Args:
+        module_header: Original header from ``module`` keyword to ``);``.
+        direction: ``"input"``, ``"output"``, or ``"inout"``.
+        port_name: Signal name, e.g. ``WEN_0`` or ``D_0``.
+        width: Bit width of the port (1 for a scalar, > 1 for a vector).
+
+    Returns:
+        Modified header with the new port inserted.
+    """
+    close = module_header.rfind(");")
+    if close == -1:
+        return module_header
+
+    # --- Find the last port line before ); and add a trailing comma ---------
+    before = module_header[:close]
+    lines = before.split("\n")
+    # Work backwards to find the last non-empty, non-comment line
+    for i in range(len(lines) - 1, -1, -1):
+        stripped = lines[i].strip()
+        if stripped and not stripped.startswith("//"):
+            if not stripped.endswith(","):
+                lines[i] = lines[i] + ","
+            break
+    before = "\n".join(lines)
+
+    # --- Determine indentation from the last port line ----------------------
+    indent = "  "  # default
+    for line in reversed(lines):
+        stripped = line.lstrip()
+        if stripped.startswith(("input", "output", "inout")):
+            indent = line[: len(line) - len(stripped)]
+            break
+
+    if width > 1:
+        decl = f"{indent}{direction}  wire [{width - 1}:0]  {port_name}"
+    else:
+        decl = f"{indent}{direction}  wire  {port_name}"
+    return before + "\n" + decl + "\n" + module_header[close:]
+
+
 def _find_module_declaration(content: str):
     """Extract module name, full header text, and port-list text.
 
@@ -728,6 +815,8 @@ def generate_fpga_wrapper(
 
     # 4. Build MemoryPort objects per block ----------------------------------
     is_rom = "rom" in wrapper_path.stem.lower()
+    rom_wdata_ports: dict[int, tuple[str, int]] = {}  # idx -> (wdata_name, q_width)
+    rom_wen_ports: dict[int, tuple[str, int, str]] = {}  # idx -> (wen_name, byte_width, gwen_name)
     memory_ports: list[MemoryPort] = []
     mem_signal_names: set[str] = set()
     dummy_wires: list[str] = []          # wire declarations for blocks missing q
@@ -741,6 +830,73 @@ def generate_fpga_wrapper(
         if "addr" not in signals:
             logger.debug("Block %d missing addr, skipping", idx)
             continue
+
+        # --- ROM ECC-split detection (no data/wen in RTL -- use q width) --------
+        if is_rom and "q" in signals:
+            _, q_width, q_range = signals["q"]
+            ecc_info = _is_ecc_split(module_name, q_width)
+            if ecc_info:
+                data_bits, ecc_count, ecc_width, style = ecc_info
+
+                # --- Determine WEN / GWEN / D port names from case convention -------
+                wdata_name = _build_wdata_name(signals, idx)
+                wen_name = _build_wen_name(signals, idx)
+                gwen_name = _build_gwen_name(signals, idx)
+
+                # --- ME expression (active-high) ----------------------------------
+                if "cen" in signals:
+                    me_expr = "~" + signals["cen"][0]
+                elif "me" in signals:
+                    me_expr = signals["me"][0]
+                else:
+                    me_expr = "1'b1"
+
+                # --- Signal identities -------------------------------------------
+                addr_name, addr_width, addr_range = signals["addr"]
+                clk_name, _, _ = signals["clk"]
+                q_name, _, _ = signals["q"]
+
+                addr_full = addr_name + addr_range
+                mem_depth = 1 << addr_width
+
+                # --- ram_we wire (GWEN gates per-byte WEN mask) ----------------
+                data_bytes = data_bits // 8
+                ram_we_sig = f"ram_we_{idx}"
+                ecc_ram_we_wires.append(
+                    f"wire [{data_bytes - 1}:0] {ram_we_sig}"
+                    f" = {{{data_bytes}{{~{gwen_name}}}}} & ~{wen_name};"
+                )
+
+                ecc_body = _gen_ecc_split_body(
+                    block_idx=idx,
+                    clk_name=clk_name,
+                    addr_full=addr_full,
+                    me_expr=me_expr,
+                    ram_we_sig=ram_we_sig,
+                    wdata_name=wdata_name,
+                    rdata_name=q_name,
+                    addr_width=addr_width,
+                    mem_depth=mem_depth,
+                    data_bits=data_bits,
+                    ecc_count=ecc_count,
+                    ecc_width=ecc_width,
+                    ecc_we_expr=f"~{gwen_name}",
+                )
+                ecc_split_blocks.extend(ecc_body)
+
+                # Track port names consumed
+                for _sig_type, (name, _w, _rng) in signals.items():
+                    mem_signal_names.add(name)
+
+                # Register D, WEN, GWEN ports for header insertion
+                rom_wdata_ports[idx] = (wdata_name, q_width)
+                rom_wen_ports[idx] = (wen_name, data_bytes, gwen_name)
+
+                logger.info(
+                    "  block %d: ROM ECC split (%s) -> %d-bit data + %dx%d-bit ECC, D port %s",
+                    idx, style, data_bits, ecc_count, ecc_width, wdata_name,
+                )
+                continue  # skip normal MemoryPort path
 
         # --- ECC-split detection (DMA / CAN / CPPE_CACHE) ----------------------
         data_sig = signals.get("data")
@@ -880,14 +1036,31 @@ def generate_fpga_wrapper(
 
         # --- ROM fix-up -----------------------------------------------------
         if is_rom:
+            wdata_name = _build_wdata_name(signals, idx)
+            wen_name = _build_wen_name(signals, idx)
+            gwen_name = _build_gwen_name(signals, idx)
             port.wdata_width = port.rdata_width
-            port.wdata = f"{{{port.rdata_width}{{1'b0}}}}"
+            port.wdata = wdata_name + q_range
+            port.ram_we = f"{{{port.byte_width}{{~{gwen_name}}}}} & ~{wen_name}"
+            rom_wdata_ports[idx] = (wdata_name, port.rdata_width)
+            rom_wen_ports[idx] = (wen_name, port.byte_width, gwen_name)
 
         memory_ports.append(port)
 
         # Track port names consumed by spram instances
         for _sig_type, (name, _w, _rng) in signals.items():
             mem_signal_names.add(name)
+
+    # --- Insert ROM GWEN / WEN / wdata ports into module header ------------
+    if rom_wen_ports:
+        for idx in sorted(rom_wen_ports):
+            wen_name, wen_width, gwen_name = rom_wen_ports[idx]
+            module_header = _insert_port(module_header, "input", gwen_name, 1)
+            module_header = _insert_port(module_header, "input", wen_name, wen_width)
+    if rom_wdata_ports:
+        for idx in sorted(rom_wdata_ports):
+            wdata_name, wdata_width = rom_wdata_ports[idx]
+            module_header = _insert_port(module_header, "input", wdata_name, wdata_width)
 
     if not memory_ports and not ecc_split_blocks:
         logger.warning("No usable memory blocks in %s", wrapper_path)

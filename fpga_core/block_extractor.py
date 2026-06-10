@@ -323,9 +323,14 @@ class FPGABlockExtractor:
                 rtl_vis   = raw.lines[1 : raw.else_idx]      # between ifndef and else
                 postamble = raw.lines[raw.else_idx:]         # else  ...  endif
             else:
+                # No else -- endif must NOT be in rtl_visible: it is a
+                # preprocessor sentinel and does NOT exist in the reference
+                # RTL.  Putting it in postamble keeps the clean output
+                # identical to the RTL, avoiding a spurious diff on every
+                # sync.
                 preamble  = raw.lines[:1]                    # just the ifndef line
-                rtl_vis   = raw.lines[1:]                    # all lines after ifndef
-                postamble = []
+                rtl_vis   = raw.lines[1:-1]                  # between ifndef and endif
+                postamble = raw.lines[-1:]                   # the `endif line
 
         block = FPGABlock(
             block_id=block_id,

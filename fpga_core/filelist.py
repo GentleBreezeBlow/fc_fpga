@@ -88,7 +88,10 @@ def generate_filelist(
     lines = [ln for ln in lines if "/mbist_wrap/rtl_v/" not in ln.replace("\\", "/")]
 
     # ---- Replace RTL entries with FPGA / stub entries ---------------------
-    for name, full_path in fpga_files.items():
+    # Sort by name length descending so longer names match first; otherwise
+    # a shorter name (e.g. "cache_wrap.v") can false-match a longer name
+    # (e.g. "cppe_cache_wrap.v") via _replace_file_entry's endswith check.
+    for name, full_path in sorted(fpga_files.items(), key=lambda x: len(x[0]), reverse=True):
         lines = _replace_file_entry(lines, name, full_path)
 
     # ---- Add TB FPGA files ------------------------------------------------
@@ -177,8 +180,13 @@ def _replace_file_entry(lines: list[str], basename: str, new_path: str) -> list[
     result: list[str] = []
     found = False
     for ln in lines:
-        # Match lines where basename is the file component
-        if ln.rstrip().endswith(basename):
+        stripped = ln.rstrip()
+        # Match only when basename is the full file component: must be
+        # preceded by "/" or "\" (or be the entire line), otherwise
+        # "cache_wrap.v" would falsely match "cppe_cache_wrap.v".
+        if stripped.endswith(basename) and (
+            stripped == basename or stripped[-(len(basename) + 1)] in ("/", "\\")
+        ):
             if not found:
                 result.append(new_path)
                 found = True

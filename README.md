@@ -6,29 +6,32 @@
 
 ```bash
 # 设好项目所需的环境变量，然后运行
-python fpga.py full             # 全流程：sync + memory + filelist + diff report
+python fpga.py full             # 全流程：sync + compare + memory + filelist + strip-ips
 ```
 
 ## 命令一览
 
 | 命令 | 说明 |
 |------|------|
-| `full` | 完整流程：sync → memory → filelist → diff report |
-| `sync [--no-compare]` | 同步 `fpga_v` ← `rtl_v`，`--no-compare` 跳过生成 diff report |
+| `full` | 完整流程：sync → compare → memory → filelist → strip-ips（自动读 `strip_ips.conf`） |
+| `sync [--no-compare]` | 同步 `fpga_v` ← `rtl_v`，`--no-compare` 跳过 diff report |
 | `memory` | 生成 `mbist_wrap/fpga_v/` 下的 FPGA SP-RAM 替换文件 |
 | `filelist` | 生成 Vivado 综合用的 `filelist.f` |
 | `compare` | 生成 RTL vs FPGA 的 HTML diff report |
-| `list-ips` | 列出 hierarchy module 中例化的所有 IP |
-| `strip-ips` | 用 `ifdef FPGA_SYN` 包裹指定实例，输出端口 tie 到 0 |
+| `list-ips [-o file]` | 列出 hierarchy module 中例化的 IP，输出到文件（默认 `hierarchy_ips.txt`） |
+| `strip-ips` | 用 `ifdef FPGA_SYN` 包裹指定实例，输出端口 tie 0（`_b` 结尾的端口 tie 1） |
 
 ### 示例
 
 ```bash
-python fpga.py sync --no-compare   # 只 sync，不生成 diff report
-python fpga.py memory              # 只重新生成 memory wrapper
-python fpga.py filelist            # 只重新生成 filelist.f
-python fpga.py strip-ips run_int spi2       # 剥离 run_int 中的 spi2 实例
-python fpga.py strip-ips --file strip_ips.conf  # 批量剥离（按配置文件）
+python fpga.py sync --no-compare                   # 只 sync，不生成 diff report
+python fpga.py memory                              # 只重新生成 memory wrapper
+python fpga.py filelist                            # 只重新生成 filelist.f
+python fpga.py list-ips                            # 列出 IP → hierarchy_ips.txt
+python fpga.py list-ips -o my_ips.txt              # 输出到指定文件
+python fpga.py strip-ips run_int spi1              # 扁平名（唯一时可用）
+python fpga.py strip-ips run_top.u_run_int spi1       # dotted path 精确指定
+python fpga.py strip-ips --file strip_ips.conf      # 批量剥离（按配置文件）
 ```
 
 ## 工作原理
@@ -50,7 +53,8 @@ rtl_v/foo.sv                     fpga_v/foo.sv
            fpga_v/foo.sv (更新后)
 ```
 
-- `ifdef FPGA_SYN` / `ifndef FPGA_SYN` 块自动保留
+- `ifdef FPGA_SYN` / `ifndef FPGA_SYN` 块自动保留，`ifndef` 无 `else` 的 `endif` 正确处理为预处理指令而非 RTL 代码
+- `mbist_wrap/` 下的 memory wrapper 由 `memory` 命令管理，`sync` 自动跳过
 - 超出 block 范围的 RTL 修改被合并进 fpga_v
 - FPGA block 的 `rtl_visible` 部分如果被修改，打印黄色警告 + 完整路径
 - stub 端口有增减时自动报告：`+N port(s) added` / `-N port(s) removed`
@@ -59,11 +63,31 @@ rtl_v/foo.sv                     fpga_v/foo.sv
 
 读取 `mbist_wrap/rtl_v/*_wrap.sv` 的 memory 端口，生成同名的 `mbist_wrap/fpga_v/*_wrap.sv`：
 
+#### ECC-split 规则
+
+| 条件 | data 位宽 | ECC 位宽 | ECC 数量 | 风格 |
+|------|-----------|----------|----------|------|
+| DMA (110-bit) | 64 | 5 | 9 | default (genvar loop) |
+| CAN/FlexCAN (104-bit) | 64 | 5 | 8 | default (genvar loop) |
+| ROM (72-bit) | 64 | 8 | 1 | default (genvar loop) |
+| ROM (39-bit) | 32 | 7 | 1 | default (genvar loop) |
+| CPPE Cache (36-bit) | 32 | 4 | 1 | cache (fpga_mem) |
+
+#### ROM wrapper 特殊处理
+
+- ROM 的 `fpga_v` 由 `memory` 命令**独家管理**，`sync` 命令跳过 `mbist_wrap/` 路径
+- 自动新增输入端口（大小写跟随已有端口惯例 `CLK_0` → `D_0`, `clk_0` → `d_0`）：
+  - `D_N` — 写数据端口，位宽 = `Q_N` 位宽
+  - `WEN_N` — per-byte WEM mask（低有效），位宽 = `byte_width`（如 16-bit → `[1:0]`，72-bit → `[7:0]`）
+  - `GWEN_N` — 全局写使能（低有效），1-bit
+- `ram_me = ~CEN`（chip enable），`ram_we = {N{~GWEN}} & ~WEN`（GWEN gate WEN mask）
+- ECC spram 的 `ram_we` 只用 `~GWEN`（GWEN 有效即可写 ECC）
+
+#### 通用特性
+
 - 普通 memory → `fpga_spram` 实例化
-- DMA (110-bit) → 64-bit 数据 SP-RAM + 9×5-bit ECC SP-RAM（generate loop）
-- CAN (104-bit) → 64-bit 数据 SP-RAM + 8×5-bit ECC SP-RAM（generate loop）
-- CPPE Cache (36-bit) → 32-bit 数据 SP-RAM + `fpga_mem` ECC（原始 WEM）
-- 非 8 倍数的数据宽度（如 39-bit → 40-bit）自动补齐
+- WEM bitmask 自动按 byte lane 归约（NAND reduction）
+- 非 8 倍数的数据宽度（如 39-bit）mem_width 自动补齐到 8 边界（→ 40-bit pad）
 - 每次生成前**清空** `fpga_v/` 目录，避免旧项目残留
 
 ### 3. filelist — 生成综合 filelist
@@ -79,25 +103,66 @@ rtl_v/foo.sv                     fpga_v/foo.sv
 ```verilog
 // 把指定 instance 包裹起来：
 `ifdef FPGA_SYN
-  assign output_signal = 1'b0;   // FPGA 下输出 tie 0
+  assign output_signal = 1'b0;   // FPGA 下输出 tie 0（_b 结尾端口 tie 1'b1）
 `else
   module_name inst_name (...);    // ASIC 下保留原例化
 `endif
 ```
 
-配置文件格式（`strip_ips.conf`）：
+支持两种写法定位目标模块：
+- **扁平名**（`run_int`）— 直接写模块名，唯一时自动解析
+- **dotted path**（`run_top.u_run_int`）— 全路径精确指定，用 **例化名** 逐级定位
+
+> 首 token 是顶层模块名，后续 token 是例化名，如 `run_top.u_run_int.u_cppe.u_platform_int`。用 `list-ips` 先列出所有路径再挑。
+
+`strip-ips` 配置文件格式（`strip_ips.conf`）：
 
 ```ini
-# 格式: <父模块名> : <例化名1> <例化名2> ...
-run_int: spi2
-cppe_periph_top: u_uart u_spi
+# 格式: <模块名|例化名路径> : <例化名1> <例化名2> ...
+# 注释行用 #
+# 同一个模块可以跨多行写，自动合并
+# 支持 shell 风格通配符: * ? [...]
+
+run_int: spi*
+# 等价于:
+run_int: spi0 spi1 spi2
+
+# 通配符展开基于文件中实际存在的例化名，不在 block 内的才会被匹配
 ```
+
+- 输出端口：普通端口 → `assign sig = 1'b0;`（多 bit 用 `{N{1'b0}}`）
+- 以 `_b` 结尾的端口（active-low）→ `assign sig = 1'b1;`（多 bit 用 `{N{1'b1}}`）
+- 支持 idempotent：重复运行不产生嵌套 `ifdef`
+- `full` 命令最后自动调用，无需手动执行
+- un-strip：从 config 中移除的实例自动恢复原始例化
+
+### 5. list-ips — 列出层级 IP
+
+默认输出到 `hierarchy_ips.txt`，不打印到终端。使用 `fpga_core/scanner.py` 中的 `_HIER_MODULES` set 配置要扫描的层级路径：
+
+```python
+_HIER_MODULES: set[str] = {
+    "standby_top",
+    "standby_top.u_standby_int",
+    "run_top",
+    "run_top.u_run_int",
+    "run_top.u_run_int.u_cppe",
+    "run_top.u_run_int.u_cppe.u_platform_int",
+    "run_top.u_platform_int",
+}
+```
+
+填什么路径就扫什么路径，不递归、不自动扩展。
 
 ## 配置文件
 
 ### `strip_ips.conf`
 
-控制 `strip-ips` 命令需要剥离哪些实例，格式见上方。
+控制 `strip-ips` 命令需要剥离哪些实例，格式见 [strip-ips](#4-strip-ips--剥离例化)。
+
+### `fpga_core/scanner.py` — `_HIER_MODULES`
+
+控制 `list-ips` 和 `strip-ips` 的层级路径解析，格式见 [list-ips](#5-list-ips--列出层级-ip)。
 
 ### `fpga_core/config.py` 中的可配置项
 
