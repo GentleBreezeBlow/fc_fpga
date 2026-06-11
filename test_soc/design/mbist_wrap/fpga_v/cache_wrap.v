@@ -59,8 +59,8 @@ module cache_wrap (
       .ram_addr (a_0[12:0]),
       .ram_me   (~cen_0),
       .ram_we   ({5{~gwen_0}}),
-      .ram_wdata({1{1'b0}, d_0[38:0]}),
-      .ram_rdata({1{1'b0}, q_0[38:0]})
+      .ram_wdata({{1{1'b0}}, d_0[38:0]}),
+      .ram_rdata({{1{1'b0}}, q_0[38:0]})
   );
 
 endmodule

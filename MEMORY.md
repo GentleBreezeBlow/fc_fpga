@@ -2,10 +2,11 @@
 
 > Cross-session context. CLAUDE.md links here for project history.
 
-## Current state snapshot (2026-06-08)
+## Current state snapshot (2026-06-11)
 
-- 16 FPGA pairs (11 original + 5 memory wrappers: sram, rom, dma, cppe_ram, cppe_cache)
-- 1 stub pair (dip_sce)
+- 16 FPGA pairs (11 original + 5 memory wrappers: sram, rom, dma, cppe_ram, cppe_cache) + 2 more: hsm_rom_wrap, sys_rom_wrap
+- 1 stub pair (dip_sce), `STUB_IPS` user-editable in config.py top
+- `EXTRA_INCLUDE_DIRS` user-editable in config.py top
 - `verify.py`: 11 OLD states, 47 checks, 7 steps
 - `list-ips`: `spi_ctrl` ×3 (spi0/1/2), `uart_top` ×12 (uart_gen[0..11].u_uart), platform_int memory wrappers, standby_int timer + i2c
 - `_check_required_env()` validates all env vars + `PROJ_NAME` before any command
@@ -230,6 +231,36 @@ standby_int: gpio
 
 ### test_soc additions
 - Added cppe_ram_wrap.v (39-bit, tests padding) and cppe_cache_wrap.v (36-bit, tests ECC-split) to mbist_wrap/rtl_v + fpga_v
+
+## 2026-06-11 changelog
+
+### config.py — user-editable top-level lists
+- `STUB_IPS: list[str]` at top of config.py: user adds IP names here to use stub_v instead of rtl_v. Default `["dip_sce"]`.
+- `EXTRA_INCLUDE_DIRS: list[str]` at top: appended to `set_property include_dirs`. Default `["$CPPE_CPUSYSTEM_DIR/CORTEXM4/rtl_v", "$COMMON_IP_DIR/dip_sce/rtl_v"]`.
+- `use_sce` derived as `"dip_sce" not in STUB_IPS` (was inverted before fix).
+- Removed `FPGA_INCLUDE_DIRS` / `FPGA_INCLUDE_DIRS_NOSCE` static templates.
+- `FPGA_XDC_PROPERTY`: top → `fpga_top`, xdc → `[string tolower ${PROJ_NAME}]_fpga_cons.xdc`.
+
+### filelist.py — include dir extraction from source filelist
+- `_parse_source_include_dirs()`: extracts `+incdir+` and `-y` paths from source, checks `-y` paths are directories.
+- `_build_tcl_header()`: dynamically merges `EXTRA_INCLUDE_DIRS` + source-extracted dirs with dedup.
+- `_read_source_filelist()`: skips `-y` lines (handled separately).
+
+### memory.py — brace fix
+- `to_spram_instantiation()`: fixed wdata/rdata padding f-string to produce `{{1{1'b0}}, d_0[38:0]}` instead of syntax error `{1{1'b0}, d_0[38:0]}`. Extra `}}` before comma closes replication before concat separator.
+
+### stripper.py — comment-safe parsing for large files
+- `_inside_comment()`: new function detecting `//` and `/* */` comments at a position.
+- `_parse_instance_body()`: loops through regex matches, skips those inside comments or existing `ifdef FPGA_SYN` blocks.
+- `_parse_port_connections()`: `_skip_forward_comments()` inline function skips `//`/`/* */` in main loop, signal extraction, and comma handling. Fixes `)` inside comments (e.g. `// mode (stop, doze, sleep)`) being misidentified as port-list end.
+- `_extract_module_outputs()`: `in_port_decl` flag tracks unclosed multi-line port declarations so continuation lines (e.g. `bar;` after `output [7:0] foo,`) are included.
+
+### fpga.py
+- `use_sce` logic fix: `"dip_sce" in config.use_stub_list` → `not in`.
+
+### test_soc additions
+- `run_int/rtl_v`: added can10 (d_ip_flexcan3_syn, ~95 ports, 440-line instance) and cpu1_tcm_wrap (cppe_ram_wrap) instances.
+- `top_rtl_filelist`: added `-y` entries for dip_sce and CORTEX4.
 
 ## GitHub
 - Repo: `github.com/GentleBreezeBlow/fc_fpga`

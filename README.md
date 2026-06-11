@@ -93,27 +93,29 @@ rtl_v/foo.sv                     fpga_v/foo.sv
 ### 3. filelist — 生成综合 filelist
 
 - 读取 `top_rtl_filelist`，过滤掉 `tsmc_lib` / `gf22_lib` / `MEMORY_DIR`
-- `rtl_v` 路径替换为 `fpga_v` 路径
+- `+incdir+xxx` 和 `-y xxx`（目录）自动提取到 `set_property include_dirs`，与 `EXTRA_INCLUDE_DIRS` 合并去重
+- `rtl_v` 路径替换为 `fpga_v` 路径（按文件名长度降序替换，`cppe_cache_wrap` 不会被 `cache_wrap` 误吞）
 - `mbist_wrap/rtl_v` 全部剔除，只保留 `mbist_wrap/fpga_v`
 - `$VAR` / `${VAR}` 引用展开为绝对路径（`/` 分隔）
-- 末尾追加 Tcl property 和 xdc 约束文件
+- 末尾追加 Tcl property 和 xdc 约束文件（top 名 `fpga_top`，xdc 文件 `[string tolower ${PROJ_NAME}]_fpga_cons.xdc`）
 
 ### 4. strip-ips — 剥离例化
 
 ```verilog
 // 把指定 instance 包裹起来：
 `ifdef FPGA_SYN
-  assign output_signal = 1'b0;   // FPGA 下输出 tie 0（_b 结尾端口 tie 1'b1）
+  assign output_signal = 'b0;    // tie 0（unsized literal，Verilog 自动扩展位宽）
+  assign active_low_b = 1'b1;   // _b / _b_ 端口 tie 1（需位宽）
 `else
   module_name inst_name (...);    // ASIC 下保留原例化
 `endif
 ```
 
 支持两种写法定位目标模块：
-- **扁平名**（`run_int`）— 直接写模块名，唯一时自动解析
+- **扁平名**（`run_int`）— 直接写模块名，唯一时自动解析；歧义时报错列出所有匹配路径
 - **dotted path**（`run_top.u_run_int`）— 全路径精确指定，用 **例化名** 逐级定位
 
-> 首 token 是顶层模块名，后续 token 是例化名，如 `run_top.u_run_int.u_cppe.u_platform_int`。用 `list-ips` 先列出所有路径再挑。
+> 扁平名通过 `_HIER_MODULES` 解析为对应的 fpga_v 文件，最终匹配的是 **leaf module name**。
 
 `strip-ips` 配置文件格式（`strip_ips.conf`）：
 
@@ -127,14 +129,24 @@ run_int: spi*
 # 等价于:
 run_int: spi0 spi1 spi2
 
-# 通配符展开基于文件中实际存在的例化名，不在 block 内的才会被匹配
+# 精确名称不需要通配符
+run_int: sram_decoder
 ```
 
-- 输出端口：普通端口 → `assign sig = 1'b0;`（多 bit 用 `{N{1'b0}}`）
-- 以 `_b` 结尾的端口（active-low）→ `assign sig = 1'b1;`（多 bit 用 `{N{1'b1}}`）
-- 支持 idempotent：重复运行不产生嵌套 `ifdef`
+#### tie-off 规则
+
+| 端口特征 | 1-bit | 多-bit |
+|----------|-------|--------|
+| 普通端口 | `'b0`（unsized，缺省位宽） | `'b0` |
+| `_b` 或 `_b_` 端口 | `1'b1` | `{N{1'b1}}` |
+
+#### 运行机制
+
+- **unstrip-all 再 re-strip**：每次运行先无条件恢复所有剥离的例化，再根据当前 config 重新剥离。这样 tie-off 格式变更、端口增减、`_b` 检测修正全部自动生效
+- **嵌套 `ifdef` 安全**：用平衡计数而非正则解析 `ifdef/endif` 边界，正确处理 body 中已有的 RTL 级 `ifdef FPGA_SYN`
+- **注释安全**：例化搜索和端口解析全程跳过 `//` 和 `/* */` 注释，同行注释中的 `)` 不会导致端口列表提前截断
+- **输出端口解析**：支持 ANSI（`module foo(input a, output b);`）和非 ANSI（`module foo(a,b); output b;`）风格；非 ANSI 多行端口声明续行（如 `output [7:0] foo,\n bar;`）正确解析
 - `full` 命令最后自动调用，无需手动执行
-- un-strip：从 config 中移除的实例自动恢复原始例化
 
 ### 5. list-ips — 列出层级 IP
 
@@ -168,10 +180,18 @@ _HIER_MODULES: set[str] = {
 
 | 配置 | 说明 |
 |------|------|
+| `STUB_IPS` | stub IP 列表，在列表里的 IP 会用 `stub_v` 替代 `rtl_v`（如 `["dip_sce", "dft_cggroup"]`） |
+| `EXTRA_INCLUDE_DIRS` | 追加到 `set_property include_dirs` 的目录（如 `["$CPPE_CPUSYSTEM_DIR/CORTEXM4/rtl_v"]`） |
 | `SKIP_DIRS` | 遍历时跳过的目录名（默认 `tool_data`） |
 | `ENV_TO_FILELIST_VAR` | 环境变量 → Tcl 变量映射 |
-| `MEM_PORT_PATTERNS` | memory 端口命名正则 |
-| `FPGA_INCLUDE_DIRS` | filelist Tcl header |
+
+> `STUB_IPS` 同时控制 `use_sce`：dip_sce 不在列表里时自动加 dip_sce include dir 和 `FPGA_SET_PROPERTY_SCE`。`EXTRA_INCLUDE_DIRS` 里 dip_sce 需用户手动添加。
+
+## 性能
+
+- **RTL 缓存**：`scanner` 和 `stripper` 共用模块名 → 路径缓存，整个 session 只 `os.walk` 一次
+- **例化解析缓存**：同一 RTL 文件被多条 `_HIER_MODULES` 路径引用时只解析一次 `extract_instances`
+- **匹配结果缓存**：扁平名解析结果缓存，同一模块名多次查询不重复遍历路径链
 
 ## 依赖
 

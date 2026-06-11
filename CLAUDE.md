@@ -25,7 +25,7 @@ python fpga.py strip-ips --file strip_ips.conf   # batch strip
 
 All must be set. `fpga.py` validates at startup and exits with `env vars not set: ...` listing missing ones.
 
-`PROJ_NAME`: used for xdc constraint file name `${PROJ_NAME}_cons.xdc` in generated filelist.
+`PROJ_NAME`: used for xdc constraint file name `[string tolower ${PROJ_NAME}]_fpga_cons.xdc` in generated filelist.
 
 ## Architecture
 ```
@@ -47,11 +47,12 @@ fpga_core/
 - `DesignScanner`: single class for all directory traversal, skip `tool_data` dirs; extracts module instantiations with generate-for loop expansion
 - `memory.py`: WEM byte-lane reduction + per-byte `ram_we` expansion + ECC-split: DMA 110→64+9x5, CAN 104→64+8x5, cppe_cache 36→32+4 (`fpga_mem` style); non-byte-multiple widths auto-pad to 8 boundary (39→40); **fpga_v dir cleared before regen**
 - `sync_stub_ports()` in merger.py: auto-sync stub_v module header + reports port diff (green `+N added`, red `-N removed`); yellow warnings when stub body references removed ports
-- `strip_instances()` in stripper.py: wraps with `ifdef FPGA_SYN`/`else`/`endif`; **auto un-strips instances removed from config**; idempotent on re-run
-- `generate_filelist()` in filelist.py: strips mbist_wrap/rtl_v entries, replaces with fpga_v; `$VAR`/`${VAR}` expanded to absolute paths with `/` normalization; `${PROJ_NAME}_cons.xdc` for constraint file
+- `strip_instances()` in stripper.py: wraps with `ifdef FPGA_SYN`/`else`/`endif`; **auto un-strips all then re-strips**; comment-safe instance matching (skips `//`/`/* */`); port connection parser skips comments to avoid `)` false matches; non-ANSI multi-line port continuation handled; idempotent on re-run
+- `generate_filelist()` in filelist.py: strips mbist_wrap/rtl_v entries, replaces with fpga_v; `+incdir+`/`-y` dirs from source auto-merged into `set_property include_dirs` with dedup; `$VAR`/`${VAR}` expanded to absolute paths with `/` normalization; top set to `fpga_top`, xdc: `[string tolower ${PROJ_NAME}]_fpga_cons.xdc`
 - `_read_html()` in report.py: auto-detect encoding (UTF-8/GBK/latin-1) when merging HTML reports
 - `ColoredFormatter` in fpga.py: per-level ANSI colors, ASCII double-line boxed section headers, compact `HH:MM:SS module` prefix
 - Python >= 3.9 compatibility: `os.walk()` not `Path.walk()` (3.12+ only)
+- `config.py` top-level user-editable lists: `STUB_IPS` (IPs to replace with stub_v, also controls `use_sce` for dip_sce include dir/set_property), `EXTRA_INCLUDE_DIRS` (appended to filelist include_dirs, dip_sce dir must be manually added here)
 - No `os.system()` / pip deps — Python stdlib only
 - Edit `fpga.py` for CLI changes, `fpga_core/<module>.py` for logic
 

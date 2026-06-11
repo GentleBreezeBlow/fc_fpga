@@ -54,7 +54,74 @@ module cppe_ram_wrap (
     input         dftrambyp_1,
     input         ret1n_1,
     output [1:0]  so_1,
-    output [38:0] q_1
-);
+    output [38:0] q_1,
+
+input         clk_2,
+input         cen_2,
+input         gwen_2,
+input  [12:0] a_2,
+input  [38:0] d_2,
+input  [2:0]  ema_2,
+input  [1:0]  emaw_2,
+input         emas_2,
+input         rdt_2,
+input         wabl_2,
+input  [2:0]  wablm_2,
+input         rawl_2,
+input  [1:0]  rawlm_2,
+input         stov_2,
+input         se_2,
+input  [1:0]  si_2,
+input         dftrambyp_2,
+input         ret1n_2,
+output [1:0]  so_2,
+output [38:0] q_2,
+
+input         clk_3,
+input         cen_3,
+input         gwen_3,
+input  [12:0] a_3,
+input  [38:0] d_3,
+input  [2:0]  ema_3,
+input  [1:0]  emaw_3,
+input         emas_3,
+input         rdt_3,
+input         wabl_3,
+input  [2:0]  wablm_3,
+input         rawl_3,
+input  [1:0]  rawlm_3,
+input         stov_3,
+input         se_3,
+input  [1:0]  si_3,
+input         dftrambyp_3,
+input         ret1n_3,
+output [1:0]  so_3,
+output [38:0] q_3,
+
+input wire ijtag_tck,
+input wire ijtag_reset,
+input wire ijtag_ce,
+input wire ijtag_se,
+input wire ijtag_ue,
+input wire ijtag_sel,
+input wire ijtag_si,
+output wire ijtag_so,
+input wire ltest_en,
+input wire memory_bypass_en,
+input wire mcp_bounding_en,
+input wire scan_en,
+
+output wire bisr_so,
+input wire bisr_si,
+input wire bisr_shift_en,
+input wire bisr_clk,
+input wire bisr_reset);
+
+
+
+
+
+
+
 
 endmodule

@@ -9,6 +9,8 @@ import os
 import sys
 from pathlib import Path
 
+from fpga_core.config import STUB_IPS
+
 # ---- Encoding helpers (Windows defaults to GBK, we need UTF-8) ----
 def _read(path):
     return path.read_text(encoding="utf-8")
@@ -922,11 +924,11 @@ def run():
 
     fl_path = generate_filelist(
         design_dirs=design_dirs,
-        use_stub_list=["dip_sce"],
+        use_stub_list=list(STUB_IPS),
         tb_fpga_paths=tb_paths,
         source_filelist=source,
         output_path=HERE / "filelist.f",
-        use_sce=True,
+        use_sce=("dip_sce" not in STUB_IPS),
     )
 
     c = _read(fl_path)

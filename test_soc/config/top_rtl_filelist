@@ -40,3 +40,6 @@ $LIBRARY_DIR/gf22_lib/stdcell.v
 // This is a comment — should be stripped
 +incdir+$COMMON_IP_DIR/dip_sce/rtl_v
 +incdir+$CPPE_CPUSYSTEM_DIR/CORTEX4/rtl_v
+
+-y $COMMON_IP_DIR/dip_sce/rtl_v
+-y $CPPE_CPUSYSTEM_DIR/CORTEX4/rtl_v

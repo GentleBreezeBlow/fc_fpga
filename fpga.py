@@ -216,7 +216,7 @@ def gen_fpga_filelist(config: FPGAToolConfig) -> Path:
         tb_fpga_paths=config.tb_fpga_paths,
         source_filelist=source,
         output_path=Path("filelist.f"),
-        use_sce=("dip_sce" in config.use_stub_list),
+        use_sce=("dip_sce" not in config.use_stub_list),
     )
 
 

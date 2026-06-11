@@ -12,8 +12,7 @@ from typing import Optional
 
 from .config import (
     ENV_TO_FILELIST_VAR,
-    FPGA_INCLUDE_DIRS,
-    FPGA_INCLUDE_DIRS_NOSCE,
+    EXTRA_INCLUDE_DIRS,
     FPGA_SET_PROPERTY,
     FPGA_SET_PROPERTY_SCE,
     FPGA_XDC_PROPERTY,
@@ -84,6 +83,9 @@ def generate_filelist(
 
     lines = _read_source_filelist(source_filelist, use_stub_list, stub_files)
 
+    # ---- Parse +incdir+ / -y from source for include_dirs -----------------
+    extra_inc_dirs = _parse_source_include_dirs(source_filelist)
+
     # ---- Strip all mbist_wrap/rtl_v entries (replaced by fpga_v below) ----
     lines = [ln for ln in lines if "/mbist_wrap/rtl_v/" not in ln.replace("\\", "/")]
 
@@ -122,11 +124,11 @@ def generate_filelist(
                 logger.error("  Missing from filelist: %s", name)
 
     # ---- Build final output -----------------------------------------------
-    header = _build_tcl_header(use_sce)
+    header = _build_tcl_header(use_sce, extra_inc_dirs)
     body = "\n".join(f"read_verilog -sv {ln}" for ln in lines)
     footer = _build_tcl_footer(use_sce)
 
-    output = f"{header}\n{body}\n}}\n{footer}\n"
+    output = f"{header}\n{body}\n{footer}\n"
 
     # Expand Tcl variable references to absolute paths
     output = _expand_tcl_vars(output)
@@ -159,8 +161,10 @@ def _read_source_filelist(
             # Skip comments
             if ln.startswith("//"):
                 continue
-            # Skip incdir directives
+            # Skip incdir / -y directives (handled by _parse_source_include_dirs)
             if "+incdir+" in ln:
+                continue
+            if ln.startswith("-y "):
                 continue
             lines.append(ln)
 
@@ -198,9 +202,65 @@ def _replace_file_entry(lines: list[str], basename: str, new_path: str) -> list[
     return result
 
 
-def _build_tcl_header(use_sce: bool) -> str:
-    """Return the Tcl header block."""
-    return FPGA_INCLUDE_DIRS if use_sce else FPGA_INCLUDE_DIRS_NOSCE
+def _parse_source_include_dirs(path: Path) -> list[str]:
+    """Extract ``+incdir+`` and ``-y`` directory paths from source filelist.
+
+    Paths are returned in ``$VAR`` form (expanded later by ``_expand_tcl_vars``).
+    ``-y`` paths are resolved to check whether they are directories; files are
+    skipped.
+    """
+    inc_dirs: list[str] = []
+    seen: set[str] = set()
+
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for raw in fh:
+            ln = raw.strip()
+            if not ln or ln.startswith("//"):
+                continue
+            if "+incdir+" in ln:
+                _, _, dir_path = ln.partition("+incdir+")
+                dir_path = dir_path.strip()
+                if dir_path and dir_path not in seen:
+                    seen.add(dir_path)
+                    inc_dirs.append(dir_path)
+            elif ln.startswith("-y "):
+                dir_path = ln[3:].strip()
+                if not dir_path:
+                    continue
+                expanded = _expand_tcl_vars(dir_path)
+                if os.path.isdir(expanded) and dir_path not in seen:
+                    seen.add(dir_path)
+                    inc_dirs.append(dir_path)
+
+    return inc_dirs
+
+
+def _build_tcl_header(use_sce: bool, extra_include_dirs: list[str] | None = None) -> str:
+    """Build the ``set_property include_dirs`` Tcl header.
+
+    Merges static include directories with ``+incdir+`` / ``-y`` paths
+    extracted from the source filelist, without duplicates.
+    """
+    dirs: list[str] = []
+    seen: set[str] = set()
+
+    # Extra include directories from config (user-editable)
+    for d in EXTRA_INCLUDE_DIRS:
+        if d not in seen:
+            seen.add(d)
+            dirs.append(d)
+
+    if extra_include_dirs:
+        for d in extra_include_dirs:
+            if d not in seen:
+                seen.add(d)
+                dirs.append(d)
+
+    lines = ["set_property include_dirs {"]
+    for d in dirs:
+        lines.append(f"{d} \\")
+    lines.append("} [current_fileset]")
+    return "\n".join(lines)
 
 
 def _build_tcl_footer(use_sce: bool) -> str:

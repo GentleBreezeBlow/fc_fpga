@@ -10,6 +10,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+# =============================================================================
+# Stub IP list — add IP names here to replace real RTL with stub_v
+# e.g. STUB_IPS = ["dip_sce", "dip_can"]
+# =============================================================================
+STUB_IPS: list[str] = ["dft_cggroup"]
+
+# =============================================================================
+# Extra include directories — appended to set_property include_dirs in filelist.f
+# e.g. EXTRA_INCLUDE_DIRS = ["$CPPE_CPUSYSTEM_DIR/CORTEXM4/rtl_v", "$COMMON_IP_DIR/dip_sce/rtl_v"]
+# =============================================================================
+EXTRA_INCLUDE_DIRS: list[str] = [
+    "$CPPE_CPUSYSTEM_DIR/CORTEXM4/rtl_v",
+    "$COMMON_IP_DIR/dip_sce/rtl_v",
+]
+
 # ---------------------------------------------------------------------------
 # Environment-variable helpers
 # ---------------------------------------------------------------------------
@@ -91,19 +106,6 @@ SKIP_DIRS = frozenset({"tool_data"})
 # Tcl property templates (for filelist.f)
 # ---------------------------------------------------------------------------
 
-FPGA_INCLUDE_DIRS = """\
-set_property include_dirs {
-$CPPE_CPUSYSTEM_DIR/CORTEX4/rtl_v \\
-$COMMON_IP_DIR/dip_sce/rtl_v \\
-[current_fileset]
-}"""
-
-FPGA_INCLUDE_DIRS_NOSCE = """\
-set_property include_dirs {
-$CPPE_CPUSYSTEM_DIR/CORTEX4/rtl_v \\
-[current_fileset]
-}"""
-
 FPGA_SET_PROPERTY_SCE = """\
 set_property IS_GLOBAL_INCLUDE 1 [get_files $COMMON_IP_DIR/dip_sce/rtl_v/hsm_patronum_params.v]
 set_property FILE_TYPE {Verilog Header} [get_files $COMMON_IP_DIR/dip_sce/rtl_v/hsm_patronum_params.v]"""
@@ -115,8 +117,8 @@ set_property IS_GLOBAL_INCLUDE 1 [get_files $CPPE_CPUSYSTEM_DIR/CM4_INTEGRATION/
 set_property FILE_TYPE {Verilog Header} [get_files $CPPE_CPUSYSTEM_DIR/CM4_INTEGRATION/rtl_v/__defines_CPPE_CM4.v]"""
 
 FPGA_XDC_PROPERTY = """\
-set_property top cppe_fpga_top [current_fileset]
-add_files -fileset constrs_1 -norecurse $SOC_TB_DIR/fpga/constraints/${PROJ_NAME}_cons.xdc"""
+set_property top fpga_top [current_fileset]
+add_files -fileset constrs_1 -norecurse $SOC_TB_DIR/fpga/constrants/[string tolower ${PROJ_NAME}]_fpga_cons.xdc"""
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +182,7 @@ class FPGAToolConfig:
 
         return cls(
             design_dirs=design_dirs,
-            use_stub_list=["dip_sce"],
+            use_stub_list=list(STUB_IPS),
             tb_fpga_paths=tb_fpga_paths,
             design_config_dir=design_config_dir,
         )

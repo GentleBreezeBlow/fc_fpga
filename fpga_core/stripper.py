@@ -366,17 +366,22 @@ def _parse_instance_body(
     Returns ``(updated_text, full_text, start, end, module_name, port_conns)``
     Returns ``None`` if the instance is not found.
     """
-    # 1. Find inst_name followed by (
+    # 1. Find inst_name followed by ( — skip matches inside comments or
+    #    existing `ifdef FPGA_SYN blocks (which can appear verbatim in 1000+
+    #    line files with many commented-out instances).
     pattern = re.compile(
         r"\b" + re.escape(inst_name) + r"\s*\(",
     )
-    m = pattern.search(text)
-    if not m:
-        return None
-
-    # Skip if inside an existing `ifdef FPGA_SYN ... `endif block
-    if _inside_fpga_block(text, m.start()):
-        return None
+    search_start = 0
+    m = None
+    while True:
+        m = pattern.search(text, search_start)
+        if not m:
+            return None
+        if _inside_comment(text, m.start()) or _inside_fpga_block(text, m.start()):
+            search_start = m.end()
+            continue
+        break
 
     paren_pos = m.end()  # just after the opening (
 
@@ -399,6 +404,28 @@ def _inside_fpga_block(text: str, pos: int) -> bool:
     ifdef_count = len(re.findall(r"^\s*`ifdef\s+FPGA_SYN", before, re.MULTILINE))
     endif_count = len(re.findall(r"^\s*`endif\b", before, re.MULTILINE))
     return ifdef_count > endif_count
+
+
+def _inside_comment(text: str, pos: int) -> bool:
+    """Return True if *pos* is inside a ``//`` or ``/* */`` comment."""
+    # Line comment: find // before pos on the same line
+    line_start = text.rfind("\n", 0, pos)
+    if line_start == -1:
+        line_start = 0
+    else:
+        line_start += 1
+    comment_start = text.find("//", line_start)
+    if comment_start != -1 and comment_start < pos:
+        return True
+
+    # Block comment: pos is between /* and the next */
+    block_start = text.rfind("/*", 0, pos)
+    if block_start != -1:
+        block_end = text.find("*/", block_start + 2)
+        if block_end == -1 or block_end > pos:
+            return True
+
+    return False
 
 
 def _skip_backwards_comments(text: str, p: int) -> int:
@@ -504,6 +531,16 @@ def _parse_port_connections(
     connections: list[tuple[str, str]] = []
     i = pos
 
+    def _skip_forward_comments(i: int) -> int:
+        """Skip ``//...`` or ``/*...*/`` comment starting at *i*.  Returns new *i*."""
+        if text[i:i + 2] == "//":
+            nl = text.find("\n", i)
+            return nl + 1 if nl != -1 else len(text)
+        if text[i:i + 2] == "/*":
+            end = text.find("*/", i + 2)
+            return end + 2 if end != -1 else len(text)
+        return i
+
     while i < len(text):
         # Skip whitespace
         while i < len(text) and text[i] in " \t\r\n":
@@ -511,6 +548,12 @@ def _parse_port_connections(
 
         if i >= len(text):
             break
+
+        # Skip comments (may contain parens that would confuse the parser)
+        prev = i
+        i = _skip_forward_comments(i)
+        if i != prev:
+            continue
 
         ch = text[i]
 
@@ -539,10 +582,14 @@ def _parse_port_connections(
                 port_name = m.group(1)
                 i = m.end()  # just after .port_name(
 
-                # Extract signal expression (balanced parens)
+                # Extract signal expression (balanced parens, comment-safe)
                 depth = 1
                 sig_start = i
                 while i < len(text) and depth > 0:
+                    prev_i = i
+                    i = _skip_forward_comments(i)
+                    if i != prev_i:
+                        continue
                     if text[i] == "(":
                         depth += 1
                     elif text[i] == ")":
@@ -551,11 +598,20 @@ def _parse_port_connections(
                 signal = text[sig_start:i - 1].strip()
                 connections.append((port_name, signal))
 
-                # Skip optional comma
+                # Skip optional comma (and any trailing comment)
                 while i < len(text) and text[i] in " \t\r\n":
                     i += 1
+                prev_i = i
+                i = _skip_forward_comments(i)
+                if i != prev_i:
+                    while i < len(text) and text[i] in " \t\r\n":
+                        i += 1
                 if i < len(text) and text[i] == ",":
                     i += 1
+                    # Skip whitespace / comments after the comma too
+                    while i < len(text) and text[i] in " \t\r\n":
+                        i += 1
+                    i = _skip_forward_comments(i)
                 continue
 
         i += 1
@@ -645,10 +701,18 @@ def _extract_module_outputs(rtl_path: Path) -> set[str]:
     body_region = ""
     lines = text[header_end:].split("\n")
     _STOP_RE = re.compile(r"\b(assign|always|endmodule|genvar|generate)\b")
+    in_port_decl = False
     for ln in lines[:200]:
         stripped = ln.strip()
         if not stripped:
             body_region += ln + "\n"
+            continue
+        if in_port_decl:
+            # Continuation of a multi-line port declaration (e.g. port names
+            # on lines after "output [7:0] foo,")
+            body_region += ln + "\n"
+            if ";" in stripped:
+                in_port_decl = False
             continue
         # Skip parameter/localparam/signal decl — they can appear between ); and ports
         if re.match(r"\b(parameter|localparam|wire|reg|logic|tri|signed)\b", stripped):
@@ -660,7 +724,7 @@ def _extract_module_outputs(rtl_path: Path) -> set[str]:
             body_region += ln + "\n"
             # Handle multi-line port declarations: keep appending until we see ";"
             if ";" not in stripped:
-                continue
+                in_port_decl = True
         else:
             # Non-port, non-decl line that doesn't look like a stop — skip
             continue

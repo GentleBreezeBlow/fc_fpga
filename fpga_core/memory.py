@@ -68,12 +68,12 @@ class MemoryPort:
         wdata_pad = self.mem_width - self.wdata_width
         wdata_expr = self.wdata
         if wdata_pad > 0:
-            wdata_expr = f"{{{wdata_pad}{{1'b0}}, {self.wdata}}}"
+            wdata_expr = f"{{{{{wdata_pad}{{1'b0}}}}, {self.wdata}}}"
 
         rdata_pad = self.mem_width - self.rdata_width
         rdata_expr = self.rdata
         if rdata_pad > 0:
-            rdata_expr = f"{{{rdata_pad}{{1'b0}}, {self.rdata}}}"
+            rdata_expr = f"{{{{{rdata_pad}{{1'b0}}}}, {self.rdata}}}"
 
         return (
             f"fpga_spram #(\n"
