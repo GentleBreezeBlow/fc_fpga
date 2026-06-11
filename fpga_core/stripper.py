@@ -309,8 +309,8 @@ def _unstrip_all(text: str, fpga_path: Path) -> tuple[str, int]:
     loop_count = 0
     while changed:
         loop_count += 1
-        if loop_count > 100:
-            logger.error("Unstrip loop exceeded 100 iterations — possible infinite loop, aborting")
+        if loop_count > 1000:
+            logger.error("Unstrip loop exceeded 1000 iterations — possible infinite loop, aborting")
             break
         changed = False
         # Re-scan from start each iteration (text may have been modified)
