@@ -262,6 +262,19 @@ standby_int: gpio
 - `run_int/rtl_v`: added can10 (d_ip_flexcan3_syn, ~95 ports, 440-line instance) and cpu1_tcm_wrap (cppe_ram_wrap) instances.
 - `top_rtl_filelist`: added `-y` entries for dip_sce and CORTEX4.
 
+## 2026-06-11 changelog (continued)
+
+### merger.py — sync fixes
+- `autojunk=False` on SequenceMatcher: prevents high-frequency lines (e.g. `);`, `end`) from being classified as junk and ignored in large files.
+- `insert` opcode fix: FPGA-only lines (no RTL counterpart) are now properly removed during sync (`pass` instead of erroneously keeping them). Added `_shift_block_positions` call so block positions shift back when lines are removed.
+
+### filelist.py — EXTRA_VERILOG_FILES + std_lib filter
+- `EXTRA_VERILOG_FILES: list[str]` in config.py: user-editable list of fixed files appended as `read_verilog -sv` entries.
+- `std_lib` added to library/memory filter list alongside `tsmc_lib`, `gf22_lib`, `MEMORY_DIR`, `/aip_`.
+
+### stripper.py — unstrip loop limit
+- Raised from 100 to 1000 iterations for large files with many stripped instances.
+
 ## GitHub
 - Repo: `github.com/GentleBreezeBlow/fc_fpga`
 - Windows 凭据管理器已存 cred，`git push` 即可

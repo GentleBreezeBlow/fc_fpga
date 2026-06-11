@@ -13,6 +13,7 @@ from typing import Optional
 from .config import (
     ENV_TO_FILELIST_VAR,
     EXTRA_INCLUDE_DIRS,
+    EXTRA_VERILOG_FILES,
     FPGA_SET_PROPERTY,
     FPGA_SET_PROPERTY_SCE,
     FPGA_XDC_PROPERTY,
@@ -125,6 +126,12 @@ def generate_filelist(
 
     # ---- Build final output -----------------------------------------------
     header = _build_tcl_header(use_sce, extra_inc_dirs)
+
+    # Append user-defined extra Verilog files
+    for extra_path in EXTRA_VERILOG_FILES:
+        if extra_path not in lines:
+            lines.append(extra_path)
+
     body = "\n".join(f"read_verilog -sv {ln}" for ln in lines)
     footer = _build_tcl_footer(use_sce)
 
@@ -156,7 +163,7 @@ def _read_source_filelist(
             if not ln:
                 continue
             # Skip library / memory / AIP entries
-            if any(kw in ln for kw in ("tsmc_lib", "gf22_lib", "MEMORY_DIR", "/aip_")):
+            if any(kw in ln for kw in ("tsmc_lib", "gf22_lib", "std_lib", "MEMORY_DIR", "/aip_")):
                 continue
             # Skip comments
             if ln.startswith("//"):

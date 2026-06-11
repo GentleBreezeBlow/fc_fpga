@@ -105,7 +105,7 @@ class FileMerger:
         rtl_stripped  = [ln.rstrip() for ln in clean_rtl_lines]
 
         # --- 2. Diff the two clean (ASIC-only) views ----------------------
-        matcher = difflib.SequenceMatcher(None, rtl_stripped, fpga_stripped)
+        matcher = difflib.SequenceMatcher(None, rtl_stripped, fpga_stripped, autojunk=False)
         opcodes = matcher.get_opcodes()
 
         # Check whether clean content is already identical AND
@@ -237,11 +237,14 @@ class FileMerger:
 
             elif tag == "insert":
                 # difflib 'insert': FPGA has lines RTL doesn't.
-                # To apply RTL -> FPGA: KEEP clean_fpga[b1:b2].
+                # To apply RTL -> FPGA: DELETE these lines (skip them).
                 self._check_block_overlap(
-                    b1, b2, b2 - b1, tag, blocks, block_positions, block_warnings
+                    b1, b2, 0, tag, blocks, block_positions, block_warnings
                 )
-                merged.extend(clean_fpga_lines[b1:b2])
+                self._shift_block_positions(
+                    block_positions, b1, b2, 0, blocks
+                )
+                # pass — FPGA-only lines are omitted from merged output
 
         # Update block positions for reinsertion
         for bid, (new_start, new_end) in block_positions.items():

@@ -25,6 +25,29 @@ EXTRA_INCLUDE_DIRS: list[str] = [
     "$COMMON_IP_DIR/dip_sce/rtl_v",
 ]
 
+# =============================================================================
+# Extra Verilog files — appended as read_verilog -sv entries in filelist.f
+# e.g. EXTRA_VERILOG_FILES = ["$COMMON_IP_DIR/dip_hsm/rtl_v/hfam_params.vh"]
+# =============================================================================
+EXTRA_VERILOG_FILES: list[str] = [
+    "$COMMON_IP_DIR/dip_hsm_sys/pulpino/rtl_v/include/config.svh",
+    "$COMMON_IP_DIR/dip_hsm_sys/pulpino/rtl_v/include/defines.vh",
+    "$COMMON_IP_DIR/dip_hsm_sys/pulpino/rtl_v/include/fcb_bus.svh",
+    "$COMMON_IP_DIR/dip_hsm/rtl_v/hfam_params.vh",
+    "$COMMON_IP_DIR/dip_hsm/rtl_v/hfam_funcs.vh",
+    "$COMMON_IP_DIR/dip_hsm/rtl_v/aesm_funcs.vh",
+    "$COMMON_IP_DIR/dip_hsm/rtl_v/aesm_params.vh",
+    "$COMMON_IP_DIR/dip_hsm/rtl_v/hfam_const.vh",
+    "$COMMON_IP_DIR/dip_hsm/rtl_v/hsm_defines.vh",
+    "$COMMON_IP_DIR/dip_hsm/rtl_v/hsm_patronum_defines.vh",
+    "$COMMON_IP_DIR/dip_hsm/rtl_v/hsm_patronum_params.vh",
+    "$COMMON_IP_DIR/dip_hsm/rtl_v/hsm_wrapper_defines.vh",
+    "$COMMON_IP_DIR/dip_hsm/rtl_v/pkam_cmd.vh",
+    "$COMMON_IP_DIR/dip_hsm/rtl_v/pkam_params.vh",
+    "$COMMON_IP_DIR/dip_hsm/rtl_v/rngm_funcs.vh",
+    "$COMMON_IP_DIR/dip_hsm/rtl_v/rngm_params.vh",
+]
+
 # ---------------------------------------------------------------------------
 # Environment-variable helpers
 # ---------------------------------------------------------------------------
@@ -113,6 +136,8 @@ set_property FILE_TYPE {Verilog Header} [get_files $COMMON_IP_DIR/dip_sce/rtl_v/
 FPGA_SET_PROPERTY = """\
 set_property IS_GLOBAL_INCLUDE 1 [get_files $SOC_TB_DIR/fpga/fpga_v/FPGA_define.sv]
 set_property FILE_TYPE {Verilog Header} [get_files $SOC_TB_DIR/fpga/fpga_v/FPGA_define.sv]
+set_property IS_GLOBAL_INCLUDE 1 [get_files $COMMON_IP_DIR/dip_hsm/rtl_v/hsm_defines.vh]
+set_property FILE_TYPE {SystemVerilog} [get_files $COMMON_IP_DIR/dip_hsm/rtl_v/hsm_defines.vh]
 set_property IS_GLOBAL_INCLUDE 1 [get_files $CPPE_CPUSYSTEM_DIR/CM4_INTEGRATION/rtl_v/__defines_CPPE_CM4.v]
 set_property FILE_TYPE {Verilog Header} [get_files $CPPE_CPUSYSTEM_DIR/CM4_INTEGRATION/rtl_v/__defines_CPPE_CM4.v]"""
 
