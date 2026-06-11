@@ -275,6 +275,11 @@ standby_int: gpio
 ### stripper.py — unstrip loop limit
 - Raised from 100 to 1000 iterations for large files with many stripped instances.
 
+## 2026-06-11 changelog (continued #2)
+
+### stripper.py — no-output fallback
+- When module RTL not found or has no output ports: wrap instance in `ifndef FPGA_SYN` instead of skipping. Instance is removed entirely for FPGA (no tie-off). User gets a warning.
+
 ## GitHub
 - Repo: `github.com/GentleBreezeBlow/fc_fpga`
 - Windows 凭据管理器已存 cred，`git push` 即可

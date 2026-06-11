@@ -97,19 +97,40 @@ def strip_instances(
 
         # Find module RTL to get output port directions (cached)
         rtl_path = _find_module_rtl(module_name, scanner)
-        if rtl_path is None:
-            logger.warning(
-                "Cannot find RTL for module '%s' -- skipping %s",
-                module_name, inst_name,
-            )
-            continue
+        outputs: set[str] = set()
+        if rtl_path is not None:
+            outputs = _extract_module_outputs(rtl_path)
 
-        outputs = _extract_module_outputs(rtl_path)
         if not outputs:
-            logger.warning(
-                "No output ports found in %s -- skipping %s",
-                rtl_path.name, inst_name,
+            if rtl_path is None:
+                logger.warning(
+                    "Cannot find RTL for module '%s' — wrapping %s with `ifndef FPGA_SYN (no tie-off)",
+                    module_name, inst_name,
+                )
+            else:
+                logger.warning(
+                    "No output ports found in %s — wrapping %s with `ifndef FPGA_SYN (no tie-off)",
+                    rtl_path.name, inst_name,
+                )
+
+            # Wrap the instance in `ifndef FPGA_SYN — remove entirely for FPGA
+            indent = _indent_of(text, start)
+            line_start = text.rfind("\n", 0, start) + 1
+            start = line_start
+            block_lines = [
+                f"{indent}`ifndef FPGA_SYN",
+                indent + full_text.lstrip(),
+                f"{indent}`endif",
+            ]
+            replacement = "\n".join(block_lines)
+
+            logger.info(
+                "Stripping %s (%s) from %s — instance removed under `ifndef FPGA_SYN",
+                inst_name, module_name, fpga_path.name,
             )
+
+            text = text[:start] + replacement + text[end:]
+            stripped += 1
             continue
 
         # Build tie-off assigns for output ports
