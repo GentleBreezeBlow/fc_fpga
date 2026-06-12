@@ -123,7 +123,11 @@ def sync_fpga_files(
     notequal_fpga: list[str] = []
     notequal_rtl: list[str] = []
 
-    for rtl_path, fpga_path in scanner.iter_fpga_pairs():
+    pairs: list[tuple[Path, Path]] = list(scanner.iter_fpga_pairs())
+    # Append manual pairs (e.g. tb/fpga_v/HIZER_0.sv ↔ rtl_v/HIZER_0.sv)
+    pairs.extend(config.manual_pairs)
+
+    for rtl_path, fpga_path in pairs:
         # mbist_wrap files are managed by memory generation, not by sync
         if "mbist_wrap" in str(fpga_path):
             continue

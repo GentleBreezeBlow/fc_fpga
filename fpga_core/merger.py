@@ -561,7 +561,12 @@ def _extract_module_header(text: str) -> tuple[str, int, int] | None:
             pos += 1
 
     def _skip_balanced_parens() -> None:
-        """Skip past a balanced pair of parentheses starting at ``(``."""
+        """Skip past a balanced pair of parentheses starting at ``(``.
+
+        Ignores parens inside string literals and preprocessor directives.
+        ``while pos < len(text)`` bounds the scan to the file size, so no
+        arbitrary character limit is needed.
+        """
         nonlocal pos
         if pos >= len(text) or text[pos] != "(":
             return
@@ -569,6 +574,18 @@ def _extract_module_header(text: str) -> tuple[str, int, int] | None:
         pos += 1
         while pos < len(text) and depth > 0:
             ch = text[pos]
+            if ch == '"':
+                pos += 1
+                while pos < len(text) and text[pos] != '"':
+                    if text[pos] == '\\':
+                        pos += 1
+                    pos += 1
+                pos += 1
+                continue
+            if ch == '`':
+                nl = text.find('\n', pos)
+                pos = nl + 1 if nl != -1 else len(text)
+                continue
             if ch == "(":
                 depth += 1
             elif ch == ")":

@@ -39,7 +39,9 @@ $MEMORY_DIR/tsmc_lib/sram_cell.v
 $LIBRARY_DIR/gf22_lib/stdcell.v
 // This is a comment — should be stripped
 +incdir+$COMMON_IP_DIR/dip_sce/rtl_v
-+incdir+$CPPE_CPUSYSTEM_DIR/CORTEX4/rtl_v
++incdir+$CPPE_CPUSYSTEM_DIR/CORTEXM4/rtl_v
+$SOC_DESIGN_DIR/run_int/eftu/rtl_v/eftu_mce_top.sv
+
 
 -y $COMMON_IP_DIR/dip_sce/rtl_v
--y $CPPE_CPUSYSTEM_DIR/CORTEX4/rtl_v
+-y $CPPE_CPUSYSTEM_DIR/CORTEXM4/rtl_v

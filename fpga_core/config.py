@@ -11,6 +11,18 @@ from pathlib import Path
 from typing import Optional
 
 # =============================================================================
+# Manual RTL ↔ FPGA pairs — for files that don't share the same parent directory
+# e.g. MANUAL_PAIRS = {"HIRZER_0": {"fpga": "$SOC_TB_DIR/fpga/fpga_v/HIRZER_0.sv",
+#                                   "rtl":  "$SOC_DESIGN_DIR/xxx/rtl_v/HIRZER_0.sv"}}
+# =============================================================================
+MANUAL_PAIRS: dict[str, dict[str, str]] = {
+    "HIRZER_0": {
+        "fpga": "$SOC_TB_DIR/fpga/fpga_v/HIRZER_0.sv",
+        "rtl":  "$PLATFORM_DIR/ARM/CortexR52plus_0/rtl_v/HIRZER_0.sv",
+    },
+}
+
+# =============================================================================
 # Stub IP list — add IP names here to replace real RTL with stub_v
 # e.g. STUB_IPS = ["dip_sce", "dip_can"]
 # =============================================================================
@@ -56,6 +68,21 @@ def _env(key: str, default: str = "") -> str:
     """Read an environment variable, returning *default* if unset or empty."""
     val = os.getenv(key, default)
     return val if val else default
+
+
+def _expand_path(raw: str) -> str | None:
+    """Expand ``$VAR`` / ``${VAR}`` in *raw* and return the resolved path
+    (or *None* if a referenced variable is unset)."""
+    def _repl(m: re.Match) -> str:
+        key = m.group(1).strip("{}")
+        val = os.environ.get(key, "")
+        if not val:
+            raise KeyError(key)
+        return val
+    try:
+        return re.sub(r"\$(\w+|\{[^}]+\})", _repl, raw).replace("\\", "/")
+    except KeyError:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +219,9 @@ class FPGAToolConfig:
     # Filelist source
     design_config_dir: Optional[Path] = None
 
+    # Manual RTL ↔ FPGA pairs
+    manual_pairs: list[tuple[Path, Path]] = field(default_factory=list)
+
     @classmethod
     def from_env(cls) -> "FPGAToolConfig":
         """Build configuration from environment variables."""
@@ -205,11 +235,20 @@ class FPGAToolConfig:
         design_config = _env("DESIGN")
         design_config_dir = Path(design_config) / "config" if design_config else None
 
+        # Resolve MANUAL_PAIRS env vars
+        manual_pairs: list[tuple[Path, Path]] = []
+        for _name, paths in MANUAL_PAIRS.items():
+            rtl = _expand_path(paths["rtl"])
+            fpga = _expand_path(paths["fpga"])
+            if rtl and fpga:
+                manual_pairs.append((Path(rtl), Path(fpga)))
+
         return cls(
             design_dirs=design_dirs,
             use_stub_list=list(STUB_IPS),
             tb_fpga_paths=tb_fpga_paths,
             design_config_dir=design_config_dir,
+            manual_pairs=manual_pairs,
         )
 
 

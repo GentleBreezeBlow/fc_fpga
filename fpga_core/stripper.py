@@ -40,15 +40,21 @@ def _expand_wildcards(text: str, patterns: list[str]) -> list[str]:
         if not _inside_fpga_block(text, m.start()):
             all_instances.add(inst)
 
+    seen: set[str] = set()
     result: list[str] = []
     for pat in patterns:
         if "*" in pat or "?" in pat or "[" in pat:
             expanded = sorted(fnmatch.filter(all_instances, pat))
             if not expanded:
                 logger.warning("Wildcard '%s' matched no instances", pat)
-            result.extend(expanded)
+            for name in expanded:
+                if name not in seen:
+                    seen.add(name)
+                    result.append(name)
         else:
-            result.append(pat)
+            if pat not in seen:
+                seen.add(pat)
+                result.append(pat)
     return result
 
 
@@ -186,7 +192,9 @@ def strip_instances(
 
 # Matches `` `ifdef FPGA_SYN `` at start of line (with optional whitespace)
 _RE_IFDEF_START = re.compile(r"^([ \t]*)`ifdef\s+FPGA_SYN", re.MULTILINE)
+_RE_IFNDEF_START = re.compile(r"^([ \t]*)`ifndef\s+FPGA_SYN", re.MULTILINE)
 _RE_IFDEF_ANY   = re.compile(r"^[ \t]*`ifdef\b", re.MULTILINE)
+_RE_IFNDEF_ANY  = re.compile(r"^[ \t]*`ifndef\b", re.MULTILINE)
 _RE_ENDIF       = re.compile(r"^[ \t]*`endif\b", re.MULTILINE)
 
 def _extract_instance_from_body(body: str) -> str | None:
@@ -319,22 +327,21 @@ def _strip_block_range(text: str, start: int) -> tuple[int, int, int, str] | Non
 
 
 def _unstrip_all(text: str, fpga_path: Path) -> tuple[str, int]:
-    """Remove ALL ``ifdef FPGA_SYN ... endif`` wrappers, restoring original
-    instantiations.  The caller is responsible for re-stripping any
-    instances that should remain wrapped.
+    """Remove ALL ``ifdef FPGA_SYN ... endif`` and ``ifndef FPGA_SYN ... endif``
+    wrappers, restoring original instantiations.
 
     Returns ``(modified_text, unstrip_count)``.
     """
     unstrip_count = 0
+    # ---- Pass 1: `ifdef FPGA_SYN / `else / `endif ---------------------------
     changed = True
     loop_count = 0
     while changed:
         loop_count += 1
         if loop_count > 1000:
-            logger.error("Unstrip loop exceeded 1000 iterations — possible infinite loop, aborting")
+            logger.error("Unstrip loop exceeded 1000 iterations — aborting")
             break
         changed = False
-        # Re-scan from start each iteration (text may have been modified)
         block_count = 0
         for m_ifdef in _RE_IFDEF_START.finditer(text):
             block_count += 1
@@ -344,31 +351,86 @@ def _unstrip_all(text: str, fpga_path: Path) -> tuple[str, int]:
                 continue
             wrapper_start, else_pos, endif_pos, indent = block
 
-            # Body: starts right after the `else line, ends before the `endif line
             body_start = _find_first_newline(text, else_pos) + 1
             body = text[body_start:endif_pos].rstrip("\n")
             body_stripped = body.strip()
             if not body_stripped:
                 continue
 
-            # Try to find instance name from the body
             inst_name = _extract_instance_from_body(body_stripped)
             if inst_name is None:
                 continue
 
-            # Un-strip it — restore original instantiation
             logger.info(
                 "Un-stripping %s from %s (will re-strip if still in config)",
                 inst_name, fpga_path.name,
             )
-            # Replace entire block (ifdef→endif) with just the body
             endif_end = _find_first_newline(text, endif_pos) + 1
             text = text[:wrapper_start] + body_stripped + "\n" + text[endif_end:]
             unstrip_count += 1
             changed = True
-            break  # restart iteration after modifying text
-        logger.debug("Unstrip loop %d: scanned %d ifdef blocks, unstrip total=%d",
+            break
+        logger.debug("Unstrip `ifdef pass %d: scanned %d blocks, total=%d",
                      loop_count, block_count, unstrip_count)
+
+    # ---- Pass 2: `ifndef FPGA_SYN / `endif (no `else) -----------------------
+    changed = True
+    loop_count = 0
+    while changed:
+        loop_count += 1
+        if loop_count > 1000:
+            logger.error("Unstrip `ifndef loop exceeded 1000 iterations — aborting")
+            break
+        changed = False
+        for m_ifndef in _RE_IFNDEF_START.finditer(text):
+            start = m_ifndef.start()
+            indent = m_ifndef.group(1)
+            # Find matching `endif with balanced counting
+            pos = _find_first_newline(text, start) + 1
+            depth = 1
+            endif_pos = -1
+            while pos < len(text):
+                m_ifdef_any = _RE_IFDEF_ANY.match(text, pos)
+                m_ifndef_any = _RE_IFNDEF_ANY.match(text, pos)
+                m_endif = _RE_ENDIF.match(text, pos)
+                if m_endif is not None:
+                    depth -= 1
+                    if depth == 0:
+                        endif_pos = pos
+                        break
+                    pos = _find_first_newline(text, pos) + 1
+                    continue
+                if m_ifdef_any is not None or m_ifndef_any is not None:
+                    depth += 1
+                    pos = _find_first_newline(text, pos) + 1
+                    continue
+                pos += 1
+
+            if endif_pos == -1:
+                continue
+
+            # Body between `ifndef and `endif
+            body_start = _find_first_newline(text, start) + 1
+            body = text[body_start:endif_pos].rstrip("\n")
+            body_stripped = body.strip()
+            if not body_stripped:
+                continue
+
+            inst_name = _extract_instance_from_body(body_stripped)
+            if inst_name is None:
+                continue
+
+            logger.info(
+                "Un-stripping %s from %s (`ifndef, will re-strip if still in config)",
+                inst_name, fpga_path.name,
+            )
+            endif_end = _find_first_newline(text, endif_pos) + 1
+            text = text[:start] + body_stripped + "\n" + text[endif_end:]
+            unstrip_count += 1
+            changed = True
+            break
+        logger.debug("Unstrip `ifndef pass %d: total=%d", loop_count, unstrip_count)
+
     return text, unstrip_count
 
 
@@ -644,15 +706,6 @@ def _parse_port_connections(
 # Module output-port extraction
 # ===========================================================================
 
-_OUTPUT_RE = re.compile(
-    r"\boutput\s+"
-    r"(?:reg\s+|wire\s+|logic\s+|tri\s+)?"
-    r"(?:signed\s+)?"
-    r"(?:\[[^\]]*\]\s+)?"
-    r"(\w+)",
-)
-
-
 def _extract_module_outputs(rtl_path: Path) -> set[str]:
     """Parse *rtl_path* and return the set of output port names.
 
@@ -674,8 +727,25 @@ def _extract_module_outputs(rtl_path: Path) -> set[str]:
 
     header_text = header[0]
 
+    try:
+        logger.debug("  extracting outputs from %s", rtl_path)
+        logger.debug("  header_text: %d chars", len(header_text))
+        if len(header_text) > 400:
+            logger.debug("  header head: %s", header_text[:200].replace("\n", "\\n "))
+            logger.debug("  header tail: %s", header_text[-200:].replace("\n", "\\n "))
+        else:
+            logger.debug("  header: %s", header_text.replace("\n", "\\n "))
+    except Exception:
+        logger.debug("  (diagnostic header logging failed)", exc_info=True)
+
     _KEYWORDS = {"input", "output", "inout", "reg", "wire", "logic", "tri",
-                 "signed", "supply", "wand", "wor", "begin", "end"}
+                 "signed", "supply", "wand", "wor", "begin", "end",
+                 # preprocessor directives — backtick stripped by \b(\w+)\b
+                 "ifdef", "ifndef", "endif", "else", "elsif",
+                 "define", "include", "undef", "timescale"}
+    # Strip preprocessor-directive lines from the header so that macros
+    # and identifiers on those lines don't pollute the port-name set.
+    header_text = re.sub(r"^\s*`.*$", "", header_text, flags=re.MULTILINE)
     _OUTPUT_BLOCK_RE = re.compile(r"\boutput\b", re.MULTILINE)
 
     outputs: set[str] = set()
@@ -701,7 +771,10 @@ def _extract_module_outputs(rtl_path: Path) -> set[str]:
     _INPUT_RE = re.compile(r"\binput\b", re.MULTILINE)
     _INOUT_RE = re.compile(r"\binout\b", re.MULTILINE)
 
-    for m_out in _OUTPUT_BLOCK_RE.finditer(header_text):
+    output_matches = list(_OUTPUT_BLOCK_RE.finditer(header_text))
+    logger.debug("  found %d 'output' keyword(s) in header", len(output_matches))
+
+    for m_out in output_matches:
         block_start = m_out.start()
         # Stop at the next direction keyword before stopping at ";"
         block_end = len(header_text)
@@ -710,54 +783,61 @@ def _extract_module_outputs(rtl_path: Path) -> set[str]:
             if m_end and m_end.start() < block_end:
                 block_end = m_end.start()
         block = header_text[block_start:block_end]
-        outputs |= _extract_names(block)
+        block_names = _extract_names(block)
+        logger.debug("  block[%d..%d] -> ports: %s", block_start, block_end,
+                     sorted(block_names) if block_names else "(none)")
+        outputs |= block_names
 
     if outputs:
-        logger.debug("  %s: ANSI header outputs: %s", rtl_path.name, sorted(outputs))
+        logger.debug("  ANSI total: %d output port(s): %s", len(outputs), sorted(outputs))
         return outputs
 
     # ---- Non-ANSI fallback: port directions declared after ); -----------
-    # Scan up to 200 lines after ); — only stop at real body items.
+    # Scan after ); for port direction declarations.  Stop only at real
+    # body items (assign, always, etc.) — no line limit so large files
+    # (30 k+ lines) with many interleaved declarations are handled.
+    logger.debug("  ANSI found 0 outputs, trying non-ANSI fallback...")
     header_end = header[2]  # offset of ); in the original text
     body_region = ""
     lines = text[header_end:].split("\n")
     _STOP_RE = re.compile(r"\b(assign|always|endmodule|genvar|generate)\b")
     in_port_decl = False
-    for ln in lines[:200]:
+    scanned = 0
+    for ln in lines:
+        scanned += 1
         stripped = ln.strip()
         if not stripped:
             body_region += ln + "\n"
             continue
         if in_port_decl:
-            # Continuation of a multi-line port declaration (e.g. port names
-            # on lines after "output [7:0] foo,")
             body_region += ln + "\n"
             if ";" in stripped:
                 in_port_decl = False
             continue
-        # Skip parameter/localparam/signal decl — they can appear between ); and ports
+        if _STOP_RE.match(stripped):
+            logger.debug("  non-ANSI stop at line %d: %s", scanned, stripped[:80])
+            break
         if re.match(r"\b(parameter|localparam|wire|reg|logic|tri|signed)\b", stripped):
             continue
-        # Stop at real body items
-        if _STOP_RE.match(stripped):
-            break
         if re.match(r"\b(input|output|inout)\b", stripped):
             body_region += ln + "\n"
-            # Handle multi-line port declarations: keep appending until we see ";"
             if ";" not in stripped:
                 in_port_decl = True
-        else:
-            # Non-port, non-decl line that doesn't look like a stop — skip
-            continue
 
+    logger.debug("  non-ANSI scanned %d lines, body_region %d chars", scanned, len(body_region))
     for m_out in _OUTPUT_BLOCK_RE.finditer(body_region):
         block_start = m_out.start()
         semicolon = body_region.find(";", block_start)
         if semicolon == -1:
             semicolon = len(body_region)
         block = body_region[block_start:semicolon]
-        outputs |= _extract_names(block)
+        block_names = _extract_names(block)
+        logger.debug("  non-ANSI block[%d..%d] -> ports: %s", block_start, semicolon,
+                     sorted(block_names) if block_names else "(none)")
+        outputs |= block_names
 
+    if outputs:
+        logger.debug("  non-ANSI total: %d output port(s): %s", len(outputs), sorted(outputs))
     if not outputs:
         logger.debug(
             "  %s: no outputs found in header or body!\n"
@@ -779,14 +859,34 @@ def _extract_module_outputs(rtl_path: Path) -> set[str]:
 
 # Module-name → RTL path cache (built once per session)
 _rtl_cache: dict[str, Path] | None = None
+_filelist_sourced: set[str] = set()  # stems that came from the filelist
+_module_name_cache: dict[str, Path] | None = None
+_MODULE_RE = re.compile(r"\bmodule\s+(\w+)")
 
 
 def _build_rtl_cache(scanner: DesignScanner) -> dict[str, Path]:
-    """Walk all design dirs once, return ``{module_name: rtl_path}``."""
+    """Build ``{stem: rtl_path}`` with three-tier priority:
+
+    1. Files explicitly listed in ``top_rtl_filelist`` (highest priority)
+    2. Files from ``-y`` library directories (recursive)
+    3. Directory walk of *scanner.design_dirs* (lowest-priority fallback)
+
+    This ensures filelist-specified files always win over any other
+    same-named file found by directory scanning.
+    """
     global _rtl_cache
     if _rtl_cache is not None:
         return _rtl_cache
     cache: dict[str, Path] = {}
+
+    # Tier 1 + 2: filelist (explicit files + -y dirs)
+    global _filelist_sourced
+    filelist_path = _resolve_filelist_path()
+    if filelist_path is not None:
+        _load_cache_from_filelist(cache, filelist_path)
+        _filelist_sourced = set(cache.keys())  # snapshot after filelist load
+
+    # Tier 3: directory walk fallback (only fills missing entries)
     for design_dir in scanner.design_dirs:
         if not design_dir.is_dir():
             continue
@@ -805,18 +905,133 @@ def _build_rtl_cache(scanner: DesignScanner) -> dict[str, Path]:
                     stem = f.stem
                     if stem not in cache:
                         cache[stem] = f
+
+    logger.info("RTL cache built: %d modules (filelist %s)",
+                 len(cache),
+                 "used" if filelist_path is not None else "not found")
     _rtl_cache = cache
-    logger.info("RTL cache built: %d modules", len(cache))
     return cache
+
+
+def _resolve_filelist_path() -> Path | None:
+    """Return the path to ``top_rtl_filelist``, or *None* if not found."""
+    design = os.environ.get("DESIGN")
+    if not design:
+        return None
+    # Try bare $DESIGN/top_rtl_filelist first; some projects keep it in config/
+    for name in ("top_rtl_filelist", "config/top_rtl_filelist"):
+        candidate = Path(design) / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _load_cache_from_filelist(cache: dict[str, Path], filelist_path: Path) -> None:
+    """Parse *filelist_path* and insert every Verilog file into *cache*."""
+    try:
+        var_re = re.compile(r"\$(\w+|[{]\w+[}])")
+    except re.error:
+        var_re = re.compile(r"\$(\w+)")
+
+    def _expand_var(m: re.Match) -> str:
+        key = m.group(1).strip("{}")
+        return os.environ.get(key, m.group(0))
+
+    # Collect -y library directories
+    y_dirs: list[Path] = []
+
+    with open(filelist_path, "r", encoding="utf-8", errors="replace") as fh:
+        for raw in fh:
+            ln = raw.split("//", 1)[0].strip()
+            if not ln:
+                continue
+            # Skip include directories
+            if "+incdir+" in ln:
+                continue
+            # Collect -y entries
+            if ln.startswith("-y "):
+                expanded = var_re.sub(_expand_var, ln[3:].strip())
+                p = Path(expanded)
+                if p.is_dir():
+                    y_dirs.append(p)
+                continue
+            # Skip library / memory / AIP entries
+            if any(kw in ln for kw in ("tsmc_lib", "gf22_lib", "std_lib", "MEMORY_DIR", "/aip_")):
+                continue
+            # Expand environment variables
+            expanded = var_re.sub(_expand_var, ln)
+            p = Path(expanded)
+            if p.is_file() and p.suffix in (".sv", ".v"):
+                stem = p.stem
+                if stem not in cache:
+                    cache[stem] = p
+
+    # Also index files from -y directories (lower priority, recursive)
+    for y_dir in y_dirs:
+        for root, dirs, _files in os.walk(str(y_dir)):
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            root_path = Path(root)
+            for f in root_path.iterdir():
+                if f.is_file() and f.suffix in (".sv", ".v"):
+                    stem = f.stem
+                    if stem not in cache:
+                        cache[stem] = f
 
 
 def _find_module_rtl(
     module_name: str,
     scanner: DesignScanner,
 ) -> Path | None:
-    """Search for the RTL source of *module_name* across all design dirs (cached)."""
+    """Search for the RTL source of *module_name*.
+
+    Priority:
+    1. Filelist-sourced files scanned for actual ``module`` name (highest)
+    2. Stem lookup (includes directory-walk fallback entries)
+    3. All cached files scanned for ``module`` name (lowest)
+
+    This ensures ``eftu_mce_top.sv`` (which declares ``module eftu_top``
+    and is listed in the filelist) always wins over a stray
+    ``eftu_top.sv`` found by directory walk.
+    """
+    global _module_name_cache, _filelist_sourced
     cache = _build_rtl_cache(scanner)
-    return cache.get(module_name)
+
+    # Build module-name cache from filelist-sourced files (once)
+    if _module_name_cache is None:
+        _module_name_cache = {}
+        filelist_paths = [cache[s] for s in _filelist_sourced if s in cache]
+        for path in filelist_paths:
+            try:
+                first = path.read_text(encoding="utf-8", errors="replace")[:2000]
+                m = _MODULE_RE.search(first)
+                if m:
+                    actual_name = m.group(1)
+                    if actual_name not in _module_name_cache:
+                        _module_name_cache[actual_name] = path
+            except OSError:
+                continue
+
+    # Tier 1: filelist-based module-name lookup (overrides everything)
+    if module_name in _module_name_cache:
+        return _module_name_cache[module_name]
+
+    # Tier 2: fast stem lookup
+    if module_name in cache:
+        return cache[module_name]
+
+    # Tier 3: scan ALL cached files for module name
+    for path in cache.values():
+        if path not in _module_name_cache.values():
+            try:
+                first = path.read_text(encoding="utf-8", errors="replace")[:2000]
+                m = _MODULE_RE.search(first)
+                if m and m.group(1) == module_name:
+                    _module_name_cache[module_name] = path
+                    return path
+            except OSError:
+                continue
+
+    return None
 
 
 # ===========================================================================
@@ -831,8 +1046,11 @@ def _signal_width(signal: str, text: str) -> int | None:
 
     Returns the bit-width (e.g. 8), or ``None`` if not determinable.
     """
-    base = re.sub(r"\[.*\]", "", signal)  # strip index, e.g. spi_start[2] -> spi_start
-    pattern = re.compile(_SIGNAL_DECL_RE_TEMPLATE.format(re.escape(base)))
+    base = re.sub(r"\[.*\]", "", signal)
+    try:
+        pattern = re.compile(_SIGNAL_DECL_RE_TEMPLATE.format(re.escape(base)))
+    except re.error:
+        return None
     m = pattern.search(text)
     if m:
         try:

@@ -145,7 +145,12 @@ run_int: sram_decoder
 - **unstrip-all 再 re-strip**：每次运行先无条件恢复所有剥离的例化，再根据当前 config 重新剥离。这样 tie-off 格式变更、端口增减、`_b` 检测修正全部自动生效
 - **嵌套 `ifdef` 安全**：用平衡计数而非正则解析 `ifdef/endif` 边界，正确处理 body 中已有的 RTL 级 `ifdef FPGA_SYN`
 - **注释安全**：例化搜索和端口解析全程跳过 `//` 和 `/* */` 注释，同行注释中的 `)` 不会导致端口列表提前截断
-- **输出端口解析**：支持 ANSI（`module foo(input a, output b);`）和非 ANSI（`module foo(a,b); output b;`）风格；非 ANSI 多行端口声明续行（如 `output [7:0] foo,\n bar;`）正确解析
+- **预处理器安全**：端口列表中 `` `ifdef `` / `` `endif `` 行自动 strip，宏名不会污染端口名集合；`_b` 检测在端口名层面判断，不受预处理器影响
+- **输出端口解析**：支持 ANSI（`module foo(input a, output b);`）和非 ANSI（`module foo(a,b); output b;`）风格；端口列表中的字符串字面量（如 `"press (A)"`）不干扰括号匹配；非 ANSI 多行端口声明续行（如 `output [7:0] foo,\n bar;`）正确解析
+- **unstrip 双轮机制**：先清理 `` `ifdef FPGA_SYN `` 块（含 `else`），再清理 `` `ifndef FPGA_SYN `` 块（无 `else`），避免无输出模块重复包裹导致 `` `endif `` / `` `ifdef `` 连续出现
+- **通配符去重**：`eftu_mce_wrap` 同时被显式列举和 `eftu*` 匹配时自动去重，不会重复剥离
+- **filelist 优先的模块查找**：`_find_module_rtl` 三级优先级：① filelist 中文件的实际 `module` 名 → ② 文件名 stem → ③ 全量扫描。确保 `eftu_mce_top.sv`（filelist 列出，内部 `module eftu_top`）优先于目录遍历碰到的 `eftu_top.sv`
+- **信号宽度解析防御**：`_signal_width` 在信号名含非法正则字符时安全返回 None，不崩溃
 - `full` 命令最后自动调用，无需手动执行
 
 ### 5. list-ips — 列出层级 IP
@@ -180,6 +185,7 @@ _HIER_MODULES: set[str] = {
 
 | 配置 | 说明 |
 |------|------|
+| `MANUAL_PAIRS` | 手动指定 RTL ↔ FPGA 配对。FPGA 和 RTL 不在同一父目录时使用，syn c 自动同步（如 `{"HIRZER_0": {"fpga": "$SOC_TB_DIR/fpga/fpga_v/HIRZER_0.sv", "rtl": "$PLATFORM_DIR/ARM/CortexR52plus_0/rtl_v/HIRZER_0.sv"}}`） |
 | `STUB_IPS` | stub IP 列表，在列表里的 IP 会用 `stub_v` 替代 `rtl_v`（如 `["dip_sce", "dft_cggroup"]`） |
 | `EXTRA_INCLUDE_DIRS` | 追加到 `set_property include_dirs` 的目录（如 `["$CPPE_CPUSYSTEM_DIR/CORTEXM4/rtl_v"]`） |
 | `SKIP_DIRS` | 遍历时跳过的目录名（默认 `tool_data`） |
@@ -189,9 +195,11 @@ _HIER_MODULES: set[str] = {
 
 ## 性能
 
-- **RTL 缓存**：`scanner` 和 `stripper` 共用模块名 → 路径缓存，整个 session 只 `os.walk` 一次
+- **RTL 缓存**（三层优先级）：① `top_rtl_filelist` 显式列出的文件 → ② `-y` 库目录递归扫描 → ③ 目录遍历 fallback。filelist 条目永远优先于目录遍历，高优先级文件不会因低优先级同名文件而覆盖
 - **例化解析缓存**：同一 RTL 文件被多条 `_HIER_MODULES` 路径引用时只解析一次 `extract_instances`
 - **匹配结果缓存**：扁平名解析结果缓存，同一模块名多次查询不重复遍历路径链
+- **通配符去重**：strip-ips 通配符（如 `eftu*`）自动展开后去重，同名例化不会重复剥离
+- **二级模块名索引**：文件名 != 模块名时（如 `eftu_mce_top.sv` 内部 `module eftu_top`），自动解析文件头 2000 字节建立映射，后续 O(1) 查找
 
 ## 依赖
 
