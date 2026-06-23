@@ -57,7 +57,12 @@ def generate_filelist(
 
     # ---- Collect stub / fpga file info ------------------------------------
     stub_files: dict[str, str] = {}   # basename -> full path
-    fpga_files: dict[str, str] = {}   # basename -> full path
+    # fpga_files: {basename: {parent_dir: full_path}}
+    # parent_dir is the absolute normalized directory that CONTAINS fpga_v/.
+    # Multiple IP directories may have files with the same basename; the
+    # nested dict maps each parent directory to its own fpga_v path so we
+    # never cross-replace between different IP trees.
+    fpga_files: dict[str, dict[str, str]] = {}
 
     for design_dir in design_dirs:
         if not design_dir.is_dir():
@@ -74,9 +79,11 @@ def generate_filelist(
 
             fpga_dir = root_path / "fpga_v"
             if fpga_dir.is_dir():
+                # Absolute, forward-slash parent — the directory containing fpga_v/
+                parent = str(root_path.resolve()).replace("\\", "/")
                 for f in fpga_dir.iterdir():
                     if f.is_file() and RE_VERILOG_EXT.search(f.suffix):
-                        fpga_files[f.name] = str(f).replace("\\", "/")
+                        fpga_files.setdefault(f.name, {})[parent] = str(f).replace("\\", "/")
 
     # ---- Read source filelist ---------------------------------------------
     if not source_filelist.is_file():
@@ -87,22 +94,53 @@ def generate_filelist(
     # ---- Parse +incdir+ / -y from source for include_dirs -----------------
     extra_inc_dirs = _parse_source_include_dirs(source_filelist)
 
+    # ---- Collect source parent dirs (before stripping mbist_wrap/rtl_v) ----
+    # These are the "grandparent" directories (containing rtl_v/fpga_v/etc.)
+    # normalized to absolute paths.  Only fpga_v files whose parent directory
+    # appears in this set are eligible for replacement / inclusion.
+    source_parents = _extract_source_parents(lines)
+
     # ---- Strip all mbist_wrap/rtl_v entries (replaced by fpga_v below) ----
     lines = [ln for ln in lines if "/mbist_wrap/rtl_v/" not in ln.replace("\\", "/")]
+
+    # ---- Filter fpga_files to only dirs present in source_parents ---------
+    filtered_fpga_files: dict[str, dict[str, str]] = {}
+    for name, parent_map in fpga_files.items():
+        relevant = {p: fp for p, fp in parent_map.items() if p in source_parents}
+        if relevant:
+            filtered_fpga_files[name] = relevant
 
     # ---- Replace RTL entries with FPGA / stub entries ---------------------
     # Sort by name length descending so longer names match first; otherwise
     # a shorter name (e.g. "cache_wrap.v") can false-match a longer name
     # (e.g. "cppe_cache_wrap.v") via _replace_file_entry's endswith check.
-    for name, full_path in sorted(fpga_files.items(), key=lambda x: len(x[0]), reverse=True):
-        lines = _replace_file_entry(lines, name, full_path)
+    for name, parent_map in sorted(filtered_fpga_files.items(), key=lambda x: len(x[0]), reverse=True):
+        lines = _replace_file_entry(lines, name, parent_map, source_parents)
 
     # ---- Add TB FPGA files ------------------------------------------------
+    # TB files use simple basename replacement — they are explicitly
+    # provided and always intended to be included regardless of directory.
     for tb_path in tb_fpga_paths:
         if tb_path.is_dir():
             for f in sorted(tb_path.iterdir()):
                 if f.is_file() and RE_VERILOG_EXT.search(f.suffix):
-                    lines = _replace_file_entry(lines, f.name, str(f).replace("\\", "/"))
+                    tb_full = str(f).replace("\\", "/")
+                    found = False
+                    new_lines: list[str] = []
+                    for ln in lines:
+                        stripped = ln.rstrip()
+                        if stripped.endswith(f.name) and (
+                            stripped == f.name or stripped[-(len(f.name) + 1)] in ("/", "\\")
+                        ):
+                            if not found:
+                                new_lines.append(tb_full)
+                                found = True
+                            # else: duplicate — skip
+                        else:
+                            new_lines.append(ln)
+                    if not found:
+                        new_lines.append(tb_full)
+                    lines = new_lines
 
     # ---- Verify fpga_v file count -----------------------------------------
     # Collect TB fpga_v files (added to filelist in the next step)
@@ -113,16 +151,19 @@ def generate_filelist(
                 if f.is_file() and RE_VERILOG_EXT.search(f.suffix):
                     tb_fpga_count += 1
 
+    # Count total fpga_v entries across all filtered parent dirs
+    filtered_fpga_total = sum(len(parent_map) for parent_map in filtered_fpga_files.values())
     fpga_v_count = sum(1 for ln in lines if "fpga_v" in ln)
-    expected_count = len(fpga_files) + tb_fpga_count
+    expected_count = filtered_fpga_total + tb_fpga_count
     if fpga_v_count != expected_count:
         logger.error(
             "fpga_v count mismatch: %d in filelist vs %d expected (design %d + tb %d)",
-            fpga_v_count, expected_count, len(fpga_files), tb_fpga_count,
+            fpga_v_count, expected_count, filtered_fpga_total, tb_fpga_count,
         )
-        for name in fpga_files:
-            if not any(name in ln and "fpga_v" in ln for ln in lines):
-                logger.error("  Missing from filelist: %s", name)
+        for name, parent_map in filtered_fpga_files.items():
+            for full_path in parent_map.values():
+                if full_path not in lines:
+                    logger.error("  Missing from filelist: %s", full_path)
 
     # ---- Build final output -----------------------------------------------
     header = _build_tcl_header(use_sce, extra_inc_dirs)
@@ -163,7 +204,7 @@ def _read_source_filelist(
             if not ln:
                 continue
             # Skip library / memory / AIP entries
-            if any(kw in ln for kw in ("tsmc_lib", "gf22_lib", "std_lib", "MEMORY_DIR", "/aip_")):
+            if any(kw in ln for kw in ("tsmc_lib", "gf22_lib", "std_lib", "MEMORY_DIR", "/aip_", "/a_ip_")):
                 continue
             # Skip comments
             if ln.startswith("//"):
@@ -186,10 +227,64 @@ def _read_source_filelist(
     return lines
 
 
-def _replace_file_entry(lines: list[str], basename: str, new_path: str) -> list[str]:
-    """Replace any entry ending with *basename* with *new_path*."""
+def _normalize_path(path: str) -> str:
+    """Expand Tcl vars and return an absolute, forward-slash path."""
+    expanded = _expand_tcl_vars(path)
+    return os.path.abspath(expanded).replace("\\", "/")
+
+
+def _parent_dir_of(path: str) -> str:
+    """Return the "grandparent" directory of a file path — the directory
+    that *contains* the immediate parent (e.g. ``rtl_v/`` or ``fpga_v/``).
+
+    ``io_lib_c40/rtl_v/xx.v`` → ``<abs>/io_lib_c40``
+    ``io_lib_c40/fpga_v/xx.v`` → ``<abs>/io_lib_c40``
+    """
+    normalized = _normalize_path(path)
+    file_dir = os.path.dirname(normalized)
+    return os.path.dirname(file_dir)
+
+
+def _extract_source_parents(lines: list[str]) -> set[str]:
+    """Extract unique "grandparent" directories from all filelist paths.
+
+    Only paths whose grandparent is non-empty are kept (bare filenames at
+    the filesystem root are skipped).
+    """
+    parents: set[str] = set()
+    for ln in lines:
+        path = ln.strip()
+        if not path:
+            continue
+        gp = _parent_dir_of(path)
+        if gp:
+            parents.add(gp)
+    return parents
+
+
+def _replace_file_entry(
+    lines: list[str],
+    basename: str,
+    parent_map: dict[str, str],
+    source_parents: set[str],
+) -> list[str]:
+    """Replace entries ending with *basename*, but **only within the same
+    directory tree**.
+
+    ``parent_map`` maps grandparent-directory → fpga_v full path.
+    When a line matches *basename*, its grandparent directory is computed;
+    replacement only happens when that grandparent has an entry in
+    *parent_map*.  Otherwise the original RTL entry is kept (no cross-IP
+    substitution).
+
+    If *basename* doesn't appear in *lines* at all, an fpga_v entry is
+    auto-appended **only** when its parent directory appears in
+    *source_parents* (i.e. the directory tree is referenced by the source
+    filelist).
+    """
     result: list[str] = []
-    found = False
+    found_any = False
+
     for ln in lines:
         stripped = ln.rstrip()
         # Match only when basename is the full file component: must be
@@ -198,14 +293,26 @@ def _replace_file_entry(lines: list[str], basename: str, new_path: str) -> list[
         if stripped.endswith(basename) and (
             stripped == basename or stripped[-(len(basename) + 1)] in ("/", "\\")
         ):
-            if not found:
-                result.append(new_path)
-                found = True
-            # else: duplicate -- skip
+            found_any = True
+            grandparent = _parent_dir_of(stripped)
+
+            if grandparent in parent_map:
+                fpga_path = parent_map[grandparent]
+                if fpga_path not in result:
+                    result.append(fpga_path)
+            else:
+                # No fpga_v sibling in this directory tree — keep original
+                result.append(ln)
         else:
             result.append(ln)
-    if not found:
-        result.append(new_path)
+
+    if not found_any:
+        # Basename not in source filelist at all — auto-append fpga_v only
+        # when its directory tree is referenced by the source filelist.
+        for parent, full_path in parent_map.items():
+            if parent in source_parents and full_path not in result:
+                result.append(full_path)
+
     return result
 
 

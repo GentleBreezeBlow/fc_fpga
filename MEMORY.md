@@ -280,6 +280,17 @@ standby_int: gpio
 ### stripper.py — no-output fallback
 - When module RTL not found or has no output ports: wrap instance in `ifndef FPGA_SYN` instead of skipping. Instance is removed entirely for FPGA (no tie-off). User gets a warning.
 
+## 2026-06-23 changelog
+
+### filelist.py — directory-aware fpga_v replacement
+- **fpga_files 结构从扁平改为嵌套**: `{basename: path}` → `{basename: {parent_dir: path}}`，多个 IP 目录下有同名文件时不会互相覆盖。
+- **`_normalize_path()` / `_parent_dir_of()`** 新函数：展开 Tcl `$VAR` 并计算"祖父目录"（包含 `rtl_v/` 或 `fpga_v/` 的目录），如 `io_lib_c40/rtl_v/xx.v` → `<abs>/io_lib_c40`。
+- **`_extract_source_parents()`** 新函数：从 top_rtl_filelist 收集所有祖父目录集合，用于过滤 fpga_v 替换范围。
+- **`_replace_file_entry()` 改为目录感知**: 只有源行和 fpga_v 的祖父目录匹配时才替换，`io_lib_t22/rtl_v/xx.v` 不会被错误替换为 `io_lib_c40/fpga_v/xx.v`。
+- **过滤不在 source_parents 中的 fpga_v**: 如果 `io_lib_c40` 不在 `top_rtl_filelist` 中，其 fpga_v 文件不会被自动追加。auto-append 仅在 parent 存在于 source_parents 时才发生。
+- TB 文件替换内联处理，保持简单 basename 匹配（TB 文件始终意图被包含）。
+- fpga_v 计数验证改用 `filtered_fpga_total`（只统计被过滤后的 fpga_v 条目数）。
+
 ## GitHub
 - Repo: `github.com/GentleBreezeBlow/fc_fpga`
 - Windows 凭据管理器已存 cred，`git push` 即可
