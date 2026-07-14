@@ -909,7 +909,8 @@ def run():
         if out:
             print(f"  [OK] {out.name}")
             c = _read(out)
-            check("fpga_spram" in c, f"    {out.name}: contains fpga_spram")
+            has_ram = "fpga_spram" in c or "fpga_sdpram" in c
+            check(has_ram, f"    {out.name}: contains fpga_spram/sdpram")
             check("MEMDEPTH" in c and "MEMWIDTH" in c,
                   f"    {out.name}: has MEMDEPTH+MEMWIDTH params")
             # Verify the wrapper is a complete module

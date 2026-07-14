@@ -294,3 +294,16 @@ standby_int: gpio
 ## GitHub
 - Repo: `github.com/GentleBreezeBlow/fc_fpga`
 - Windows 凭据管理器已存 cred，`git push` 即可
+
+## 2026-07-14 changelog
+
+### u65 dual-port memory (SDPRAM) support
+- **u65_wrap**: 5 个双端口 memory 实例 (_0, _1, _2, _27, _28)：A 端口只读 (CLKA, CENA, AA → QA)，B 端口只写 (CLKB, CENB, AB ← DB)
+- **fpga_sdpram** 新增到 `fpga_memory.v`: 基于 Xilinx `xpm_memory_sdpram` 的简单双端口 RAM wrapper（一个读端口 + 一个写端口，独立时钟）
+- **config.py**: 新增 8 个双端口信号模式 (`clka`, `clkb`, `cena`, `cenb`, `aa`, `ab`, `qa`, `db`) 在 `MEM_PORT_PATTERNS` 中，确保在单端口模式之前匹配
+- **memory.py**: 
+  - `_is_dual_port()`: 检测双端口信号组 (clka + clkb)
+  - `_gen_sdpram_block()`: 生成 `fpga_sdpram` 例化，处理宽度填充、地址宽度差异
+  - `generate_fpga_wrapper()`: 双端口检测分支，优先于 ECC/单端口路径
+- 宽度：instance 0/1/2 = 64-bit，instance 27/28 = 128-bit；地址：instance 27 = 7-bit，其余 = 8-bit
+- `verify.py`: memory 检查改为同时接受 `fpga_spram` 或 `fpga_sdpram`

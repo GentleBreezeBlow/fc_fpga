@@ -93,6 +93,55 @@ class MemoryPort:
             f");"
         )
 
+    def to_spram_block(self) -> list[str]:
+        """Generate Verilog lines for this port with safe output connections.
+
+        When the fpga_spram MEMWIDTH exceeds the module output port width
+        (non-byte-multiple rdata), declares an intermediate wire so that
+        ram_rdata drives a net instead of a concatenation expression.
+        """
+        lines: list[str] = []
+        rdata_pad = self.mem_width - self.rdata_width
+        wdata_pad = self.mem_width - self.wdata_width
+
+        # rdata: output from fpga_spram -- must connect to a wire, not an expression
+        if rdata_pad > 0:
+            rdata_wire = f"mem_rdata_{self.index}"
+            lines.append(f"wire [{self.mem_width - 1}:0] {rdata_wire};")
+            rdata_conn = rdata_wire
+        else:
+            rdata_conn = self.rdata
+
+        # wdata: input to fpga_spram -- concatenation expression is fine
+        if wdata_pad > 0:
+            wdata_conn = f"{{{{{wdata_pad}{{1'b0}}}}, {self.wdata}}}"
+        else:
+            wdata_conn = self.wdata
+
+        lines.append(f"fpga_spram #(")
+        lines.append(f"    .MEMDEPTH ({self.mem_depth}),")
+        lines.append(f"    .MEMWIDTH ({self.mem_width}),")
+        lines.append(f"    .BYTEWIDTH(8),")
+        lines.append(f"    .ADDRWIDTH({self.addr_width}),")
+        lines.append(f"    .MEMTYPE (\"block\" )")
+        lines.append(f")")
+        lines.append(f"mem_{self.index}(")
+        lines.append(f"    .ram_clk  ({self.clk}),")
+        lines.append(f"    .ram_addr ({self.addr}),")
+        lines.append(f"    .ram_me   ({self.me}),")
+        lines.append(f"    .ram_we   ({self.ram_we}),")
+        lines.append(f"    .ram_wdata({wdata_conn}),")
+        lines.append(f"    .ram_rdata({rdata_conn})")
+        lines.append(f");")
+
+        if rdata_pad > 0:
+            if self.rdata_width == 1:
+                lines.append(f"assign {self.rdata} = {rdata_wire}[0];")
+            else:
+                lines.append(f"assign {self.rdata} = {rdata_wire}[{self.rdata_width - 1}:0];")
+
+        return lines
+
 
 @dataclass
 class MemoryWrapperResult:
@@ -426,6 +475,98 @@ def _gen_cache_ecc_body(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _is_dual_port(signals: dict) -> bool:
+    """Return ``True`` if the signal group represents a dual-port memory
+    (u65-style: separate read/write clocks, addresses, and data ports).
+
+    Dual-port groups have ``clka`` + ``clkb`` (read + write clocks) instead
+    of the single ``clk`` signal.
+    """
+    return "clka" in signals and "clkb" in signals
+
+
+def _gen_sdpram_block(
+    idx: int,
+    signals: dict,
+) -> list[str]:
+    """Generate Verilog lines for an ``fpga_sdpram`` instantiation.
+
+    Maps u65-style dual-port signals to the XPM simple-dual-port RAM:
+
+    * Port A (read):  CLKA → rd_clk,  CENA → rd_en,  AA → rd_addr,  QA ← rd_data
+    * Port B (write): CLKB → wr_clk,  CENB → wr_en,  AB → wr_addr,  DB → wr_data
+
+    Returns a list of Verilog lines (already indented with ``  ``).
+    """
+    # -- Read port (A) --------------------------------------------------------
+    clka_name = signals["clka"][0]
+    cena_name = signals["cena"][0]
+    aa_name, aa_width, aa_range = signals["aa"]
+    qa_name, qa_width, qa_range = signals["qa"]
+
+    # -- Write port (B) -------------------------------------------------------
+    clkb_name = signals["clkb"][0]
+    cenb_name = signals["cenb"][0]
+    ab_name, ab_width, ab_range = signals["ab"]
+    db_name, db_width, db_range = signals["db"]
+
+    # -- Memory dimensions ----------------------------------------------------
+    # Use max of both addr widths (should match in practice)
+    addr_width = max(aa_width, ab_width)
+    mem_depth = 1 << addr_width
+    data_width = max(qa_width, db_width)
+    # Pad to byte boundary for XPM compatibility
+    mem_width = ((data_width + 7) // 8) * 8
+    byte_width = max(mem_width // 8, 1)
+
+    lines: list[str] = []
+
+    # Pad wdata / rdata to mem_width if needed
+    wdata_pad = mem_width - db_width
+    rdata_pad = mem_width - qa_width
+
+    if rdata_pad > 0:
+        # declare intermediate wire for padded read data
+        rdata_wire = f"mem_rd_data_{idx}"
+        lines.append(f"wire [{mem_width - 1}:0] {rdata_wire};")
+        rdata_conn = rdata_wire
+    else:
+        rdata_conn = qa_name + qa_range
+
+    if wdata_pad > 0:
+        wdata_conn = "{{" + str(wdata_pad) + "{1'b0}}, " + db_name + db_range + "}"
+    else:
+        wdata_conn = db_name + db_range
+
+    lines.append(f"fpga_sdpram #(")
+    lines.append(f"    .MEMDEPTH ({mem_depth}),")
+    lines.append(f"    .MEMWIDTH ({mem_width}),")
+    lines.append(f"    .BYTEWIDTH(8),")
+    lines.append(f"    .ADDRWIDTH({addr_width}),")
+    lines.append(f"    .MEMTYPE (\"block\" )")
+    lines.append(f")")
+    lines.append(f"mem_{idx}(")
+    lines.append(f"    .wr_clk  ({clkb_name}),")
+    lines.append(f"    .rd_clk  ({clka_name}),")
+    lines.append(f"    .wr_addr ({ab_name}{ab_range}),")
+    lines.append(f"    .rd_addr ({aa_name}{aa_range}),")
+    lines.append(f"    .wr_en   (~{cenb_name}),")
+    # Verilog replication: {BYTE_WIDTH{1'b1}} -> all write byte-lanes enabled
+    lines.append("    .wr_we   ({" + str(byte_width) + "{1'b1}}),")
+    lines.append(f"    .wr_data ({wdata_conn}),")
+    lines.append(f"    .rd_en   (~{cena_name}),")
+    lines.append(f"    .rd_data ({rdata_conn})")
+    lines.append(f");")
+
+    if rdata_pad > 0:
+        if qa_width == 1:
+            lines.append(f"assign {qa_name} = {rdata_wire}[0];")
+        else:
+            lines.append(f"assign {qa_name}{qa_range} = {rdata_wire}[{qa_width - 1}:0];")
+
+    return lines
+
 
 def _reduce_wem_mask(
     signal_name: str,
@@ -798,10 +939,10 @@ def generate_fpga_wrapper(
     ports_for_classify = [(p["name"], p["width"], p["range_str"]) for p in all_ports]
     mem_groups = _classify_memory_ports(ports_for_classify)
 
-    # --- Determine block count from clk_N signals ---------------------------
+    # --- Determine block count from clk_N / CLKA_N signals ------------------
     clk_indices: set[int] = set()
     for idx, signals in mem_groups.items():
-        if "clk" in signals:
+        if "clk" in signals or "clka" in signals or "clkb" in signals:
             clk_indices.add(idx)
 
     if not clk_indices:
@@ -826,10 +967,34 @@ def generate_fpga_wrapper(
     for idx in sorted(clk_indices):
         signals = mem_groups.get(idx, {})
 
-        # Must have at least clk + addr
-        if "addr" not in signals:
-            logger.debug("Block %d missing addr, skipping", idx)
+        # Must have at least clk + addr (single-port) or aa/ab (dual-port)
+        if "addr" not in signals and not _is_dual_port(signals):
+            logger.debug("Block %d missing addr/aa/ab, skipping", idx)
             continue
+
+        # --- Dual-port (u65-style: CLKA/CLKB, AA/AB, QA/DB) -------------------
+        if _is_dual_port(signals):
+            if "aa" not in signals or "ab" not in signals:
+                logger.debug("Block %d missing aa/ab, skipping dual-port", idx)
+                continue
+            if "qa" not in signals or "db" not in signals:
+                logger.debug("Block %d missing qa/db, skipping dual-port", idx)
+                continue
+
+            # Track signals consumed by sdpram instance
+            for _sig_type, (name, _w, _rng) in signals.items():
+                mem_signal_names.add(name)
+
+            ecc_split_blocks.extend(
+                f"  {line}" for line in _gen_sdpram_block(idx, signals)
+            )
+            logger.info(
+                "  block %d: dual-port sdpram, addr=%d bits, data=%d bits",
+                idx,
+                max(signals["aa"][1], signals["ab"][1]),
+                max(signals["qa"][1], signals["db"][1]),
+            )
+            continue  # skip single-port MemoryPort path
 
         # --- ROM ECC-split detection (no data/wen in RTL -- use q width) --------
         if is_rom and "q" in signals:
@@ -1116,9 +1281,8 @@ def generate_fpga_wrapper(
     if memory_ports:
         for mp in memory_ports:
             lines.append("")
-            inst = mp.to_spram_instantiation()
-            for inst_line in inst.split("\n"):
-                lines.append(f"  {inst_line}")
+            for block_line in mp.to_spram_block():
+                lines.append(f"  {block_line}")
 
     lines.append("")
     lines.append("endmodule")

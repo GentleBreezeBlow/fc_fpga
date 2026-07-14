@@ -4,6 +4,8 @@ Centralizes all path resolution, environment variable reading, regex patterns,
 and Tcl template strings that are shared across modules.
 """
 
+from __future__ import annotations
+
 import os
 import re
 from dataclasses import dataclass, field
@@ -26,7 +28,7 @@ MANUAL_PAIRS: dict[str, dict[str, str]] = {
 # Stub IP list — add IP names here to replace real RTL with stub_v
 # e.g. STUB_IPS = ["dip_sce", "dip_can"]
 # =============================================================================
-STUB_IPS: list[str] = ["dft_cggroup"]
+STUB_IPS: list[str] = ["dft_cggroup", "a_ip_lsh_tsmcN22", "a_ip_tg_tsmcN22", "pmc_powerswitch_tsmcN22"]
 
 # =============================================================================
 # Extra include directories — appended to set_property include_dirs in filelist.f
@@ -132,7 +134,20 @@ RE_PORT = re.compile(
 )
 
 # Memory port naming patterns (case-insensitive via match groups)
+# Dual-port patterns (u65-style: CLKA_N / AA_N / QA_N for read, CLKB_N / AB_N / DB_N for write)
+# must precede single-port patterns that could partially match (e.g. "cen" before "cena").
 MEM_PORT_PATTERNS: dict[str, re.Pattern] = {
+    # -- Dual-port signals (u65 / simple-dual-port wrappers) --
+    "clka": re.compile(r"^(CLKA|clka)_"),
+    "clkb": re.compile(r"^(CLKB|clkb)_"),
+    "cena": re.compile(r"^(CENA|cena)_"),
+    "cenb": re.compile(r"^(CENB|cenb)_"),
+    "aa":   re.compile(r"^(AA|aa)_"),        # read address (port A)
+    "ab":   re.compile(r"^(AB|ab)_"),        # write address (port B)
+    "qa":   re.compile(r"^(QA|qa)_"),        # read data output (port A)
+    "db":   re.compile(r"^(DB|db)_"),        # write data input (port B)
+
+    # -- Single-port signals --
     "addr": re.compile(r"^(a|A)_"),
     "data": re.compile(r"^(d|D)_"),
     "gwen": re.compile(r"(gwen|GWEN)_"),   # must precede "wen" -- gwen contains "wen"
