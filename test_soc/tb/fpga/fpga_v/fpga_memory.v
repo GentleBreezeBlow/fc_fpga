@@ -135,7 +135,6 @@ xpm_memory_sdpram #(
     .READ_DATA_WIDTH_B(MEMWIDTH),       // Port B = read data width
     .READ_LATENCY_B(1),                 // Port B = read latency
     .READ_RESET_VALUE_B("0"),           // Port B = read reset value
-    .RST_MODE_A("SYNC"),                // Port A = write reset mode
     .RST_MODE_B("SYNC"),                // Port B = read reset mode
     .USE_MEM_INIT(1),                   // DECIMAL
     .WAKEUP_TIME("disable_sleep"),      // String
@@ -151,7 +150,6 @@ data_memory_sdpram_inst (
     .dina(wr_data),                     // Port A = write data in
     .ena(wr_en),                        // Port A = write enable
     .enb(rd_en),                        // Port B = read enable
-    .rsta(1'b0),                        // Port A = write reset
     .rstb(1'b0),                        // Port B = read reset
     .sleep(1'b0),                       // sleep
     .wea(wr_we)                         // Port A = byte-write enable
