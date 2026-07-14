@@ -121,10 +121,10 @@ output wire [MEMWIDTH-1:0]     rd_data
 );
 
 xpm_memory_sdpram #(
-    .ADDR_WIDTH_A(ADDRWIDTH),           // DECIMAL
-    .ADDR_WIDTH_B(ADDRWIDTH),           // DECIMAL
+    .ADDR_WIDTH_A(ADDRWIDTH),           // Port A = write addr width
+    .ADDR_WIDTH_B(ADDRWIDTH),           // Port B = read addr width
     .AUTO_SLEEP_TIME(0),                // DECIMAL
-    .BYTE_WRITE_WIDTH_A(BYTEWIDTH),     // DECIMAL
+    .BYTE_WRITE_WIDTH_A(BYTEWIDTH),     // Port A byte-write width
     .ECC_MODE("no_ecc"),                // String
     .MEMORY_INIT_FILE(INITFILE),        // String
     .MEMORY_INIT_PARAM("0"),            // String
@@ -132,29 +132,29 @@ xpm_memory_sdpram #(
     .MEMORY_PRIMITIVE(MEMTYPE),         // String
     .MEMORY_SIZE(MEMDEPTH*MEMWIDTH),    // DECIMAL
     .MESSAGE_CONTROL(0),                // DECIMAL
-    .READ_DATA_WIDTH_B(MEMWIDTH),       // DECIMAL
-    .READ_LATENCY_B(1),                 // DECIMAL
-    .READ_RESET_VALUE_B("0"),           // String
-    .RST_MODE_A("SYNC"),                // String
-    .RST_MODE_B("SYNC"),                // String
+    .READ_DATA_WIDTH_B(MEMWIDTH),       // Port B = read data width
+    .READ_LATENCY_B(1),                 // Port B = read latency
+    .READ_RESET_VALUE_B("0"),           // Port B = read reset value
+    .RST_MODE_A("SYNC"),                // Port A = write reset mode
+    .RST_MODE_B("SYNC"),                // Port B = read reset mode
     .USE_MEM_INIT(1),                   // DECIMAL
     .WAKEUP_TIME("disable_sleep"),      // String
-    .WRITE_DATA_WIDTH_A(MEMWIDTH),      // DECIMAL
-    .WRITE_MODE_A("read_first")         // String
+    .WRITE_DATA_WIDTH_A(MEMWIDTH),      // Port A = write data width
+    .WRITE_MODE_B("no_change")          // Port B behavior on write collision: "no_change" | "read_first"
 )
 data_memory_sdpram_inst (
-    .doutb(rd_data),                    // read data (port B)
-    .addra(wr_addr),                    // write address (port A)
-    .addrb(rd_addr),                    // read address (port B)
-    .clka(wr_clk),                      // write clock (port A)
-    .clkb(rd_clk),                      // read clock (port B)
-    .dina(wr_data),                     // write data (port A)
-    .ena(wr_en),                        // write enable (port A)
-    .enb(rd_en),                        // read enable (port B)
-    .rsta(1'b0),                        // reset port A
-    .rstb(1'b0),                        // reset port B
+    .doutb(rd_data),                    // Port B = read data out
+    .addra(wr_addr),                    // Port A = write address
+    .addrb(rd_addr),                    // Port B = read address
+    .clka(wr_clk),                      // Port A = write clock
+    .clkb(rd_clk),                      // Port B = read clock
+    .dina(wr_data),                     // Port A = write data in
+    .ena(wr_en),                        // Port A = write enable
+    .enb(rd_en),                        // Port B = read enable
+    .rsta(1'b0),                        // Port A = write reset
+    .rstb(1'b0),                        // Port B = read reset
     .sleep(1'b0),                       // sleep
-    .wea(wr_we)                         // byte-write enable (port A)
+    .wea(wr_we)                         // Port A = byte-write enable
 );
 
 endmodule
