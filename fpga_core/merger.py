@@ -133,7 +133,7 @@ class FileMerger:
         # --- 3. Files differ -> apply merge --------------------------------
         logger.info("Syncing: %s <- %s", fpga_path.name, rtl_path.name)
 
-        # Map rtl_blocks to clean_fpga space BEFORE merge shifts
+        # Map rtl_blocks directly to merged-clean space (no further shift needed).
         rtl_blocks_in_fpga = self._map_rtl_blocks_to_merged(
             rtl_blocks, clean_rtl_lines, opcodes, fpga_blocks,
         )
@@ -144,9 +144,6 @@ class FileMerger:
             clean_fpga_lines, clean_rtl_lines, rtl_stripped, fpga_stripped,
             opcodes, fpga_blocks,
         )
-
-        # Also shift rtl_blocks_in_fpga using the same opcodes
-        self._apply_position_shifts(rtl_blocks_in_fpga, opcodes)
 
         # --- 4. Merge RTL blocks into the FPGA block set -------------------
         combined_blocks = dict(fpga_blocks)
@@ -324,62 +321,44 @@ class FileMerger:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _map_rtl_pos_to_fpga(
-        rtl_pos: int,
-        opcodes: list[tuple[str, int, int, int, int]],
-    ) -> int:
-        """Map a single line index from clean-RTL space to clean-FPGA space.
-
-        Uses the difflib opcodes between clean_rtl (A) and clean_fpga (B).
-        """
-        for tag, a1, a2, b1, b2 in opcodes:
-            if a1 <= rtl_pos < a2:
-                if tag == "equal":
-                    return b1 + (rtl_pos - a1)
-                elif tag == "replace":
-                    if b1 < b2:
-                        return b1 + min(rtl_pos - a1, b2 - b1 - 1)
-                    else:
-                        return b1
-                elif tag == "delete":
-                    return b1
-        # Fallback: position not covered by any opcode -> return as-is
-        return rtl_pos
-
-    @staticmethod
     def _map_rtl_blocks_to_merged(
         rtl_blocks: dict[int, FPGABlock],
         clean_rtl_lines: list[str],
         opcodes: list[tuple[str, int, int, int, int]],
         fpga_blocks: dict[int, FPGABlock],
     ) -> dict[int, FPGABlock]:
-        """Map *rtl_blocks*' position from clean-RTL space to clean-FPGA space.
+        """Map *rtl_blocks* positions directly to merged-clean space.
 
-        Returns a new dict with updated ``clean_start``/``clean_end`` that are
-        directly comparable to the positions in *fpga_blocks* (before any merge
-        shifts are applied).
-
-        .. note::
-
-           This produces positions in **clean-FPGA** space -- the same space
-           occupied by *fpga_blocks* immediately after extraction.  The caller
-           must apply any additional shifts that happen during
-           :meth:`_apply_diff`.
+        Builds a position map from clean-RTL line indices to their final
+        positions in the merged output, by simulating the opcode application.
+        Positions are in the same merged-clean space as fpga_blocks after
+        :meth:`_apply_diff` has shifted them -- no further shifting needed.
         """
+        # Build rtl_index -> merged_position map
+        rtl_to_merged: dict[int, int] = {}
+        merged_pos = 0
+        for tag, a1, a2, b1, b2 in opcodes:
+            if tag == "equal":
+                for i in range(a1, a2):
+                    rtl_to_merged[i] = merged_pos + (i - a1)
+                merged_pos += b2 - b1
+            elif tag in ("replace", "delete"):
+                for i in range(a1, a2):
+                    rtl_to_merged[i] = merged_pos + (i - a1)
+                merged_pos += a2 - a1
+            # insert: FPGA-only lines omitted from merged output, no RTL involved
+
         mapped: dict[int, FPGABlock] = {}
         for bid, block in rtl_blocks.items():
             if block.rtl_visible_count == 0:
-                continue  # pure-FPGA block (no rtl_visible) -- can't map
-            new_start = FileMerger._map_rtl_pos_to_fpga(
-                block.clean_start, opcodes,
-            )
-            new_end = FileMerger._map_rtl_pos_to_fpga(
-                block.clean_end - 1, opcodes,  # last line of rtl_visible
-            ) + 1
+                continue
+            rs, re = block.clean_start, block.clean_end
+            if rs not in rtl_to_merged or (re - 1) not in rtl_to_merged:
+                continue
             import copy
             b2 = copy.copy(block)
-            b2.clean_start = new_start
-            b2.clean_end = new_end
+            b2.clean_start = rtl_to_merged[rs]
+            b2.clean_end = rtl_to_merged[re - 1] + 1
             mapped[bid] = b2
         return mapped
 
@@ -404,36 +383,6 @@ class FileMerger:
             if rs < fe + TOLERANCE and re > fs - TOLERANCE:
                 return bid
         return None
-
-    @staticmethod
-    def _apply_position_shifts(
-        blocks: dict[int, FPGABlock],
-        opcodes: list[tuple[str, int, int, int, int]],
-    ) -> None:
-        """Shift *blocks*' ``clean_start``/``clean_end`` by the same deltas
-        that :meth:`_apply_diff` applies -- bringing blocks mapped to
-        clean-FPGA space into merged-clean space.
-
-        Only ``replace`` and ``delete`` opcodes cause shifts (``equal`` and
-        ``insert`` keep lengths unchanged).
-        """
-        if not blocks:
-            return
-        _pos = {bid: [b.clean_start, b.clean_end] for bid, b in blocks.items()}
-        for tag, a1, a2, b1, b2 in opcodes:
-            if tag == "replace":
-                old_len = b2 - b1
-                new_len = a2 - a1
-            elif tag == "delete":
-                old_len = 0
-                new_len = a2 - a1
-            else:
-                continue  # equal / insert -- no length change
-            FileMerger._shift_block_positions(_pos, b1, b1 + old_len, new_len, blocks)
-        for bid, b in blocks.items():
-            if bid in _pos:
-                b.clean_start, b.clean_end = _pos[bid]
-
 
 # ---------------------------------------------------------------------------
 # Stub-file port checker
@@ -560,6 +509,19 @@ def _extract_module_header(text: str) -> tuple[str, int, int] | None:
         while pos < len(text) and (text[pos].isalnum() or text[pos] == "_"):
             pos += 1
 
+    # Skip SystemVerilog import declarations that can appear between the
+    # module name and the parameter/port lists (e.g. "import pkg::*;").
+    while True:
+        _skip_ws()
+        if pos + 6 < len(text) and text[pos:pos + 6] == "import":
+            semicolon = text.find(";", pos)
+            if semicolon != -1:
+                pos = semicolon + 1
+            else:
+                break
+        else:
+            break
+
     def _skip_balanced_parens() -> None:
         """Skip past a balanced pair of parentheses starting at ``(``.
 
@@ -583,8 +545,29 @@ def _extract_module_header(text: str) -> tuple[str, int, int] | None:
                 pos += 1
                 continue
             if ch == '`':
-                nl = text.find('\n', pos)
-                pos = nl + 1 if nl != -1 else len(text)
+                # Distinguish preprocessor directives (skip entire line)
+                # from inline macro references like `DATA_WIDTH (skip
+                # only the backtick + identifier so surrounding parens
+                # are still counted correctly).
+                _PP_KEYWORDS = frozenset({
+                    "ifdef", "ifndef", "endif", "else", "elsif",
+                    "define", "include", "undef", "timescale",
+                    "line", "pragma", "undefineall", "begin_keywords",
+                    "end_keywords", "resetall", "celldefine",
+                    "endcelldefine", "default_nettype",
+                    "nounconnected_drive", "unconnected_drive",
+                })
+                after_tick = pos + 1
+                kw_end = after_tick
+                while kw_end < len(text) and (text[kw_end].isalnum() or text[kw_end] == "_"):
+                    kw_end += 1
+                keyword = text[after_tick:kw_end]
+                if keyword in _PP_KEYWORDS:
+                    nl = text.find('\n', pos)
+                    pos = nl + 1 if nl != -1 else len(text)
+                else:
+                    # Inline macro reference — skip past ` and name
+                    pos = kw_end
                 continue
             if ch == "(":
                 depth += 1
