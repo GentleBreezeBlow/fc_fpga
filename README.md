@@ -19,7 +19,7 @@ python fpga.py full             # 全流程：sync + compare + memory + filelist
 | `filelist` | 生成 Vivado 综合用的 `filelist.f` |
 | `compare` | 生成 RTL vs FPGA 的 HTML diff report |
 | `list-ips [-o file]` | 列出 hierarchy module 中例化的 IP，输出到文件（默认 `hierarchy_ips.txt`） |
-| `strip-ips` | 用 `ifdef FPGA_SYN` 包裹指定实例，输出端口 tie 0（`_b` 结尾的端口 tie 1） |
+| `strip-ips` | 用 `ifdef FPGA_SYN` 包裹指定实例，输出端口 tie 0（`_b`/`ready` 结尾或 `tie1` 指定的端口 tie 1） |
 
 ### 示例
 
@@ -54,6 +54,7 @@ rtl_v/foo.sv                     fpga_v/foo.sv
 ```
 
 - `ifdef FPGA_SYN` / `ifndef FPGA_SYN` 块自动保留，`ifndef` 无 `else` 的 `endif` 正确处理为预处理指令而非 RTL 代码
+- 嵌套 `ifdef FPGA_SYN`（例如例化端口列表内的 `` `ifdef FPGA_SYN ``）递归提取，内层 FPGA-only 分支同样保留，不会被 sync 当作多余行删除
 - `mbist_wrap/` 下的 memory wrapper 由 `memory` 命令管理，`sync` 自动跳过
 - 超出 block 范围的 RTL 修改被合并进 fpga_v
 - FPGA block 的 `rtl_visible` 部分如果被修改，打印黄色警告 + 完整路径
@@ -131,6 +132,9 @@ run_int: spi0 spi1 spi2
 
 # 精确名称不需要通配符
 run_int: sram_decoder
+
+# tie1 行：剥离 <模块名> 时，把列出的输出端口 tie 1（覆盖默认 _b/ready 启发式）
+tie1 mct : ifr_load_done bisr_reset
 ```
 
 #### tie-off 规则
@@ -138,11 +142,12 @@ run_int: sram_decoder
 | 端口特征 | 1-bit | 多-bit |
 |----------|-------|--------|
 | 普通端口 | `'b0`（unsized，缺省位宽） | `'b0` |
-| `_b` 或 `_b_` 端口 | `1'b1` | `{N{1'b1}}` |
+| `_b` / `ready` / `READY` 结尾端口 | `1'b1` | `{N{1'b1}}` |
+| `tie1` 指定端口 | `1'b1` | `{N{1'b1}}` |
 
 #### 运行机制
 
-- **unstrip-all 再 re-strip**：每次运行先无条件恢复所有剥离的例化，再根据当前 config 重新剥离。这样 tie-off 格式变更、端口增减、`_b` 检测修正全部自动生效
+- **unstrip-all 再 re-strip**：每次运行先恢复所有由本工具剥离（`ifdef` 分支仅含 `assign` tie-off）的例化，再根据当前 config 重新剥离。原生 RTL 的 `ifdef FPGA_SYN`（含 wire / 子例化等结构代码）不会被误恢复。这样 tie-off 格式变更、端口增减、`_b` 检测修正全部自动生效
 - **嵌套 `ifdef` 安全**：用平衡计数而非正则解析 `ifdef/endif` 边界，正确处理 body 中已有的 RTL 级 `ifdef FPGA_SYN`
 - **注释安全**：例化搜索和端口解析全程跳过 `//` 和 `/* */` 注释，同行注释中的 `)` 不会导致端口列表提前截断
 - **预处理器安全**：端口列表中 `` `ifdef `` / `` `endif `` 行自动 strip，宏名不会污染端口名集合；`_b` 检测在端口名层面判断，不受预处理器影响
@@ -213,7 +218,7 @@ _HIER_MODULES: set[str] = {
 fpga.py                      # CLI 入口 + 配置加载 + 工作流编排
 fpga_core/
 ├── config.py                # 路径、正则、Tcl 模板、环境变量
-├── block_extractor.py       # 状态机提取 ifdef FPGA_SYN 块
+├── block_extractor.py       # 递归提取 ifdef FPGA_SYN 块（支持嵌套）
 ├── scanner.py               # 统一目录扫描（fpga_v / stub_v / memory）
 ├── merger.py                # diff + merge 核心，stub port 同步
 ├── memory.py                # memory port 提取 → SP-RAM / fpga_mem 生成
