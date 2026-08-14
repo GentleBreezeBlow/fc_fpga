@@ -1,17 +1,14 @@
-"""FPGA-block extraction using a state machine with position tracking.
+"""FPGA-block extraction with recursive nested-block support.
 
-Replaces the fragile manual-index-arithmetic approach in the original
-``find_fpga_blocks`` / ``remove_fpga_blocks`` with a deterministic finite
-automaton that:
+Splits `` `ifdef/`ifndef FPGA_SYN`` blocks into *preamble* / *rtl_visible* /
+*postamble* parts so that the RTL-visible code can be diffed against the
+reference RTL while FPGA-only code is preserved and reinserted after merging.
 
-1. Scans once to identify `` `ifdef/`ifndef FPGA_SYN`` blocks.
-2. Splits each block into *preamble* / *rtl_visible* / *postamble* parts.
-3. Emits clean lines where each block's RTL-visible code is retained
-   (so diffing against the reference RTL file works).
-4. Tracks block positions in the clean output.
-5. Reinserts blocks after merging, using the updated RTL-visible content.
-
-Handles nested `` `ifdef `` directives correctly via a nesting counter.
+Unlike the previous flat state machine, nested `` `ifdef FPGA_SYN`` blocks
+(e.g. an `` `ifdef FPGA_SYN`` inside an instance's port list, itself inside a
+strip-ips `` `ifdef FPGA_SYN ... `else ... `endif`` wrapper) are extracted
+recursively.  Each nested block becomes a *child* of its enclosing block, so
+its FPGA-only branches are excluded from the clean view and survive a merge.
 """
 
 from __future__ import annotations
@@ -55,6 +52,11 @@ class FPGABlock:
         `endif                ->  postamble     (always includes the closing endif)
 
     For blocks without ``else`` the *rtl_visible* part is empty.
+
+    Nested FPGA_SYN blocks are extracted recursively and stored in
+    ``children``.  A child's ``clean_start``/``clean_end`` lie strictly within
+    its parent's, and the parent's ``rtl_visible`` holds the *recursively
+    cleaned* content (child FPGA-only branches removed).
     """
 
     block_id: int
@@ -67,18 +69,21 @@ class FPGABlock:
     # Lines after the RTL-visible section (includes closing endif).
     postamble: list[str] = field(default_factory=list)
 
+    # Nested FPGA_SYN blocks, ordered by their position within rtl_visible.
+    children: list["FPGABlock"] = field(default_factory=list)
+
     # Position of the rtl_visible lines in the *clean* output:
     #   clean_lines[clean_start:clean_end]  ->  rtl_visible content
     clean_start: int = 0
     clean_end: int = 0
 
-    # Original line range in the source file (1-based for diagnostics).
+    # Original line range in the source file (0-based for diagnostics).
     src_start: int = 0
     src_end: int = 0
 
     @property
     def full_lines(self) -> list[str]:
-        """Reconstruct the full block."""
+        """Reconstruct the full block (flat view, children not expanded)."""
         return self.preamble + self.rtl_visible + self.postamble
 
     @property
@@ -86,31 +91,16 @@ class FPGABlock:
         return len(self.rtl_visible)
 
     def reconstruct(self, updated_rtl: list[str]) -> list[str]:
-        """Build the block with updated RTL-visible content."""
+        """Build the block with updated RTL-visible content (flat view)."""
         return self.preamble + updated_rtl + self.postamble
 
 
 # ---------------------------------------------------------------------------
-# State machine
+# Extractor
 # ---------------------------------------------------------------------------
 
-class _State(Enum):
-    NORMAL    = auto()
-    IN_IFDEF  = auto()
-    IN_IFNDEF = auto()
-
-
-@dataclass
-class _RawBlock:
-    block_type: BlockType
-    lines: list[str]           # accumulated lines from opening directive onward
-    src_start: int
-    else_idx: int = -1         # index (within lines) of `else, or -1
-    nesting: int = 0
-
-
 class FPGABlockExtractor:
-    """State-machine extractor for FPGA_SYN preprocessor blocks.
+    """Recursive extractor for FPGA_SYN preprocessor blocks.
 
     Usage::
 
@@ -125,53 +115,89 @@ class FPGABlockExtractor:
     def extract(self, lines: list[str]) -> tuple[list[str], dict[int, FPGABlock]]:
         """Scan *lines* and separate FPGA_SYN blocks from clean RTL content.
 
+        Nested ``ifdef/ifndef FPGA_SYN`` blocks are extracted recursively and
+        stored as ``children`` of their enclosing block (also present in the
+        returned dict keyed by their own block id).
+
         Returns:
             *clean_lines* -- lines with FPGA-only code removed, RTL-visible
                              code retained for diffing.
             *blocks*       -- dict mapping block_id -> FPGABlock.
         """
+        clean, blocks = self._extract_segment(lines, _IdCounter(), offset=0)
+        return clean, blocks
+
+    def _extract_segment(
+        self, lines: list[str], ids: "_IdCounter", offset: int
+    ) -> tuple[list[str], dict[int, FPGABlock]]:
+        """Recursively extract top-level FPGA blocks from *lines*.
+
+        *ids* is a shared mutable counter so nested blocks get globally unique
+        ids.  *offset* is the global clean-line index at which *lines* begin;
+        it lets nested blocks store ``clean_start``/``clean_end`` in the
+        global clean coordinate space (not relative to their parent segment).
+
+        Returns ``(clean_lines, blocks)``; nested blocks are attached as
+        ``children`` of their parent *and* included in ``blocks``.
+        """
         clean: list[str] = []
         blocks: dict[int, FPGABlock] = {}
-        state = _State.NORMAL
-        current: Optional[_RawBlock] = None
-        block_counter = 0
-
-        for idx, raw_line in enumerate(lines):
+        i = 0
+        n = len(lines)
+        while i < n:
+            raw_line = lines[i]
             stripped = raw_line.rstrip("\n\r")
 
-            if state is _State.NORMAL:
-                result = self._try_start_block(raw_line, stripped, idx, state, current)
-                if result is not None:
-                    state, current = result
-                    continue
+            block_type = None
+            if RE_IFDEF_FPGA_SYN.search(stripped):
+                block_type = BlockType.IFDEF
+            elif RE_IFNDEF_FPGA_SYN.search(stripped):
+                block_type = BlockType.IFNDEF
+
+            if block_type is None:
                 clean.append(raw_line)
+                i += 1
+                continue
 
-            elif state in (_State.IN_IFDEF, _State.IN_IFNDEF):
-                assert current is not None
-                current.lines.append(raw_line)
+            # Collect the full block (handles nested directives via counting).
+            block_lines, end_i = self._collect_block(lines, i)
+            preamble, rtl_vis, postamble = self._partition(block_type, block_lines)
 
-                if RE_ENDIF.search(stripped):
-                    if current.nesting > 0:
-                        current.nesting -= 1
-                    else:
-                        block = self._build_block(block_counter, current, clean)
-                        blocks[block_counter] = block
-                        block_counter += 1
-                        state = _State.NORMAL
-                        current = None
-                elif RE_ELSE.search(stripped) and current.else_idx < 0 and current.nesting == 0:
-                    current.else_idx = len(current.lines) - 1
-                elif RE_IFDEF_ANY.search(stripped) or RE_IFNDEF_ANY.search(stripped):
-                    current.nesting += 1
+            # Recursively extract nested blocks.  Their clean positions must be
+            # in the global coordinate space; this block's rtl_visible begins
+            # at global line ``offset + len(clean)``.
+            rtl_vis_offset = offset + len(clean)
+            child_clean, child_blocks = self._extract_segment(rtl_vis, ids, rtl_vis_offset)
 
-        if state is not _State.NORMAL:
-            logger.warning(
-                "Unclosed FPGA_SYN block at line %d -- treating rest of file as block",
-                current.src_start + 1 if current else 0,
+            bid = ids.next()
+            # `child_blocks` holds *all* blocks inside rtl_vis (direct children
+            # plus deeper descendants).  Attach only the direct children --
+            # those not nested inside another block of the same segment.
+            nested_ids = {c.block_id for b in child_blocks.values() for c in b.children}
+            direct_children = sorted(
+                (child_blocks[cb] for cb in child_blocks if cb not in nested_ids),
+                key=lambda b: b.clean_start,
             )
-            if current:
-                block = self._build_block(block_counter, current, clean)
-                blocks[block_counter] = block
+
+            block = FPGABlock(
+                block_id=bid,
+                block_type=block_type,
+                preamble=preamble,
+                rtl_visible=child_clean,
+                postamble=postamble,
+                children=direct_children,
+                src_start=i,
+                src_end=end_i + 1,
+            )
+            # Emit recursively-cleaned RTL-visible content into clean.
+            block.clean_start = rtl_vis_offset
+            clean.extend(child_clean)
+            block.clean_end = offset + len(clean)
+
+            blocks[bid] = block
+            blocks.update(child_blocks)
+
+            i = end_i + 1
 
         return clean, blocks
 
@@ -185,54 +211,49 @@ class FPGABlockExtractor:
         blocks: dict[int, FPGABlock],
         block_positions: Optional[dict[int, tuple[int, int]]] = None,
     ) -> list[str]:
-        """Reinsert FPGA blocks into *merged_clean* lines.
+        """Reinsert FPGA blocks into *merged_clean* lines (recursively).
 
-        Parameters:
-            merged_clean:
-                Clean lines after diff/merge (RTL-visible portions may have
-                been updated).
-            blocks:
-                Original extracted blocks (preamble/postamble preserved).
-            block_positions:
-                Optional dict mapping block_id -> (start, end) in
-                *merged_clean*.  If omitted, positions are computed from
-                the original ``clean_start``/``clean_end``, which is only
-                correct if the merge didn't shift lines.
+        Nested blocks are reconstructed innermost-first so that a parent's
+        ``rtl_visible`` slice (read from *merged_clean*) already contains the
+        fully-reconstructed children when the parent itself is reassembled.
 
-        Returns:
-            Fully merged lines with FPGA blocks restored.
+        *block_positions* is retained for backwards compatibility but ignored;
+        positions are taken from each block's ``clean_start``/``clean_end``
+        (already shifted by the merger).
         """
-        # Build a map of which merged-clean index ranges belong to each block
-        if block_positions is None:
-            block_positions = {
-                bid: (b.clean_start, b.clean_end)
-                for bid, b in blocks.items()
-            }
-
-        # Sort blocks by their clean position (descending) so we can safely
-        # splice without invalidating earlier positions.
-        ordered = sorted(
-            block_positions.items(),
-            key=lambda kv: kv[1][0],
-            reverse=True,
-        )
-
         result = list(merged_clean)
 
-        for bid, (start, end) in ordered:
-            block = blocks.get(bid)
-            if block is None:
-                continue
+        # Top-level blocks = those not referenced as any other block's child.
+        child_ids = {c.block_id for b in blocks.values() for c in b.children}
+        top_blocks = sorted(
+            (blocks[bid] for bid in blocks if bid not in child_ids),
+            key=lambda b: b.clean_start,
+        )
 
-            # The current RTL-visible content is at merged_clean[start:end]
-            # Keep newlines intact -- the merger output lines already have them
-            updated_rtl = result[start:end]
-            # If the original rtl_visible was empty, there's nothing to update
-            reconstructed = block.reconstruct(updated_rtl)
-            # Replace the clean segment with the full reconstructed block
-            result[start:end] = reconstructed
+        return self._reinsert_range(result, 0, len(result), top_blocks)
 
-        return result
+    def _reinsert_range(
+        self,
+        result: list[str],
+        start: int,
+        end: int,
+        range_blocks: list[FPGABlock],
+    ) -> list[str]:
+        """Reconstruct *result[start:end]*, splicing in *range_blocks* (which
+        must be sorted by ``clean_start`` and lie within ``[start, end)``)."""
+        out: list[str] = []
+        pos = start
+        for block in range_blocks:
+            out.extend(result[pos:block.clean_start])
+            inner = self._reinsert_range(
+                result, block.clean_start, block.clean_end, block.children,
+            )
+            out.extend(block.preamble)
+            out.extend(inner)
+            out.extend(block.postamble)
+            pos = block.clean_end
+        out.extend(result[pos:end])
+        return out
 
     # ------------------------------------------------------------------
     # Change detection
@@ -269,83 +290,105 @@ class FPGABlockExtractor:
         return changed
 
     # ------------------------------------------------------------------
-    # Internal
+    # Internal: block collection and partitioning
     # ------------------------------------------------------------------
 
-    def _try_start_block(
-        self,
-        raw_line: str,
-        stripped: str,
-        idx: int,
-        state: _State,
-        current: Optional[_RawBlock],
-    ) -> Optional[tuple[_State, _RawBlock]]:
-        """If *stripped* starts a new FPGA_SYN block, return the new state."""
-        if RE_IFDEF_FPGA_SYN.search(stripped):
-            return (
-                _State.IN_IFDEF,
-                _RawBlock(
-                    block_type=BlockType.IFDEF,
-                    lines=[raw_line],
-                    src_start=idx,
-                ),
-            )
-        if RE_IFNDEF_FPGA_SYN.search(stripped):
-            return (
-                _State.IN_IFNDEF,
-                _RawBlock(
-                    block_type=BlockType.IFNDEF,
-                    lines=[raw_line],
-                    src_start=idx,
-                ),
-            )
-        return None
+    def _collect_block(self, lines: list[str], start_i: int) -> tuple[list[str], int]:
+        """Collect the block starting at *start_i* (the opening directive).
 
-    def _build_block(
-        self, block_id: int, raw: _RawBlock, clean: list[str]
-    ) -> FPGABlock:
-        """Partition *raw* into preamble / rtl_visible / postamble."""
+        Handles nested `` `ifdef/`ifndef/`endif `` directives via a nesting
+        counter, returning ``(block_lines, end_i)`` where *end_i* is the index
+        of the matching closing `` `endif``.
+        """
+        block_lines: list[str] = [lines[start_i]]
+        nesting = 0
+        i = start_i + 1
+        n = len(lines)
+        while i < n:
+            line = lines[i]
+            stripped = line.rstrip("\n\r")
+            block_lines.append(line)
 
-        if raw.block_type is BlockType.IFDEF:
+            if RE_ENDIF.search(stripped):
+                if nesting > 0:
+                    nesting -= 1
+                else:
+                    return block_lines, i
+            elif RE_ELSE.search(stripped) and nesting == 0:
+                pass  # `else at this level -- still inside the block
+            elif RE_IFDEF_ANY.search(stripped) or RE_IFNDEF_ANY.search(stripped):
+                nesting += 1
+
+            i += 1
+
+        logger.warning(
+            "Unclosed FPGA_SYN block at line %d -- treating rest of file as block",
+            start_i + 1,
+        )
+        return block_lines, n - 1
+
+    def _partition(
+        self, block_type: BlockType, block_lines: list[str]
+    ) -> tuple[list[str], list[str], list[str]]:
+        """Split *block_lines* into ``(preamble, rtl_visible, postamble)``."""
+        else_idx = self._find_else_idx(block_lines)
+
+        if block_type is BlockType.IFDEF:
             #  `ifdef FPGA_SYN  ...  [`else  ...]  `endif
-            if raw.else_idx >= 0:
-                preamble  = raw.lines[: raw.else_idx + 1]    # up to and including else
-                postamble = raw.lines[-1:]                   # endif
-                rtl_vis   = raw.lines[raw.else_idx + 1 : -1] # between else and endif
+            if else_idx >= 0:
+                preamble = block_lines[: else_idx + 1]     # up to and including else
+                postamble = block_lines[-1:]               # endif
+                rtl_vis = block_lines[else_idx + 1 : -1]   # between else and endif
             else:
-                preamble  = raw.lines[:]                     # everything is FPGA-only
+                preamble = block_lines[:]                  # everything is FPGA-only
                 postamble = []
-                rtl_vis   = []
+                rtl_vis = []
         else:  # IFNDEF
             #  `ifndef FPGA_SYN  ...  [`else  ...]  `endif
-            if raw.else_idx >= 0:
-                preamble  = raw.lines[:1]                    # just the ifndef line
-                rtl_vis   = raw.lines[1 : raw.else_idx]      # between ifndef and else
-                postamble = raw.lines[raw.else_idx:]         # else  ...  endif
+            if else_idx >= 0:
+                preamble = block_lines[:1]                 # just the ifndef line
+                rtl_vis = block_lines[1:else_idx]          # between ifndef and else
+                postamble = block_lines[else_idx:]         # else ... endif
             else:
-                # No else -- endif must NOT be in rtl_visible: it is a
-                # preprocessor sentinel and does NOT exist in the reference
-                # RTL.  Putting it in postamble keeps the clean output
-                # identical to the RTL, avoiding a spurious diff on every
-                # sync.
-                preamble  = raw.lines[:1]                    # just the ifndef line
-                rtl_vis   = raw.lines[1:-1]                  # between ifndef and endif
-                postamble = raw.lines[-1:]                   # the `endif line
+                preamble = block_lines[:1]                 # just the ifndef line
+                rtl_vis = block_lines[1:-1]                # between ifndef and endif
+                postamble = block_lines[-1:]               # the `endif line
 
-        block = FPGABlock(
-            block_id=block_id,
-            block_type=raw.block_type,
-            preamble=preamble,
-            rtl_visible=rtl_vis,
-            postamble=postamble,
-            src_start=raw.src_start,
-            src_end=raw.src_start + len(raw.lines),
-        )
+        return preamble, rtl_vis, postamble
 
-        # Emit RTL-visible content into clean lines
-        block.clean_start = len(clean)
-        for ln in rtl_vis:
-            clean.append(ln)
-        block.clean_end = len(clean)
+    def _find_else_idx(self, block_lines: list[str]) -> int:
+        """Return the index of the block's own `` `else`` (nesting 0), or -1.
 
-        return block
+        ``block_lines[0]`` is the opening directive, so scanning starts at 1.
+        Nested `` `ifdef/`ifndef`` directives raise the nesting counter so
+        their `` `else`` lines are not mistaken for this block's `` `else``.
+        """
+        nesting = 0
+        for idx in range(1, len(block_lines)):
+            stripped = block_lines[idx].rstrip("\n\r")
+            if RE_ENDIF.search(stripped):
+                if nesting > 0:
+                    nesting -= 1
+                else:
+                    break  # reached the closing endif before any `else
+            elif RE_IFDEF_ANY.search(stripped) or RE_IFNDEF_ANY.search(stripped):
+                nesting += 1
+            elif RE_ELSE.search(stripped) and nesting == 0:
+                return idx
+        return -1
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+class _IdCounter:
+    """Simple mutable integer counter shared across recursive calls."""
+
+    def __init__(self) -> None:
+        self._value = 0
+
+    def next(self) -> int:
+        value = self._value
+        self._value += 1
+        return value

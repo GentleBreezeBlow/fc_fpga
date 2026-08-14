@@ -1,6 +1,9 @@
 //===========================================================================
 // spi_ctrl.sv — SPI Master Controller (RTL reference — with bugfix)
 //===========================================================================
+
+`include "his.sv"
+
 module spi_ctrl #(
   parameter DATA_WIDTH = 8,
   parameter CLK_DIV    = 4
@@ -8,8 +11,8 @@ module spi_ctrl #(
   input  wire                    clk,
   input  wire                    rst_n,
   input  wire                    start,
-  input  wire [DATA_WIDTH-1:0]   tx_data,
-  output wire [DATA_WIDTH-1:0]   rx_data,
+  input  wire [ (`DATA_WIDTH-1):0]   tx_data,
+  output wire [ (`DATA_WIDTH-1):0]   rx_data,
   output wire                    done,
   input  wire                    miso,
   output wire                    mosi,

@@ -302,15 +302,21 @@ def _parse_strip_file(file_path: str) -> list[tuple[str, list[str]]]:
 
         # comments ignored
         <hier_module> : <inst1> <inst2> ...
+        tie1 <module_name> : <port1> <port2> ...
 
     ``<hier_module>`` can be a flat module name (``run_int``) or a dotted
     path of instance names (``run_top.u_run_int``) for disambiguation.
+
+    ``tie1`` lines specify output ports that should be tied to 1 instead of 0
+    when stripping instances of ``<module_name>``.  These are returned
+    separately via :func:`_parse_tie1_config`.
 
     Example::
 
         run_int: spi1 spi2
         run_top.u_run_int: spi1
         standby_int: gpio
+        tie1 mct : ifr_load_done bisr_reset
     """
     result: list[tuple[str, list[str]]] = []
     merged: dict[str, list[str]] = {}
@@ -319,6 +325,8 @@ def _parse_strip_file(file_path: str) -> list[tuple[str, list[str]]]:
             line = raw.split("#", 1)[0].strip()
             if not line:
                 continue
+            if line.startswith("tie1 "):
+                continue  # parsed by _parse_tie1_config
             if ":" not in line:
                 continue
             hier_module, rest = line.split(":", 1)
@@ -329,12 +337,47 @@ def _parse_strip_file(file_path: str) -> list[tuple[str, list[str]]]:
     return [(k, v) for k, v in merged.items()]
 
 
+def _parse_tie1_config(file_path: str) -> dict[str, set[str]]:
+    """Parse ``tie1`` lines from a strip-ips config file.
+
+    Returns ``{module_name: {port, ...}}`` mapping for ports that should be
+    tied to ``1'b1`` instead of ``'b0`` when the module is stripped.
+
+    Format::
+
+        tie1 <module_name> : <port1> <port2> ...
+    """
+    result: dict[str, set[str]] = {}
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
+            for raw in fh:
+                line = raw.split("#", 1)[0].strip()
+                if not line.startswith("tie1 "):
+                    continue
+                body = line[5:].strip()  # remove "tie1 " prefix
+                if ":" not in body:
+                    continue
+                module_name, rest = body.split(":", 1)
+                module_name = module_name.strip()
+                ports = rest.strip().split()
+                if module_name and ports:
+                    result.setdefault(module_name, set()).update(ports)
+    except FileNotFoundError:
+        pass
+    return result
+
+
 def _run_strip_from_config(config: FPGAToolConfig, conf_path: str) -> None:
     """Run strip-ips using a batch config file (used by ``full`` workflow)."""
     _log = logging.getLogger(__name__)
     _log.info("Loading strip config: %s", conf_path)
     scanner = DesignScanner(config.design_dirs)
     tasks = _parse_strip_file(conf_path)
+    tie1_map = _parse_tie1_config(conf_path)
+    if tie1_map:
+        _log.info("Tie-1 overrides: %d module(s)", len(tie1_map))
+        for mod, ports in sorted(tie1_map.items()):
+            _log.info("  %s -> %s", mod, ", ".join(sorted(ports)))
     if not tasks:
         _log.info("No valid entries in %s", conf_path)
         return
@@ -349,7 +392,7 @@ def _run_strip_from_config(config: FPGAToolConfig, conf_path: str) -> None:
             _log.error("fpga_v file not found: %s", hier_module)
             continue
         _log.info("  -> %s", fpga_path)
-        n = strip_instances(fpga_path, instances, scanner)
+        n = strip_instances(fpga_path, instances, scanner, tie1_map)
         _log.info("Stripped %d instance(s) from %s", n, hier_module)
         total += n
     if total == 0:
@@ -361,9 +404,15 @@ def _run_strip(config: FPGAToolConfig, args, conf_path: str) -> None:
     _log = logging.getLogger(__name__)
     scanner = DesignScanner(config.design_dirs)
     tasks: list[tuple[str, list[str]]] = []
+    tie1_map: dict[str, set[str]] = {}
 
     if args.file:
         tasks = _parse_strip_file(args.file)
+        tie1_map = _parse_tie1_config(args.file)
+        if tie1_map:
+            _log.info("Tie-1 overrides: %d module(s)", len(tie1_map))
+            for mod, ports in sorted(tie1_map.items()):
+                _log.info("  %s -> %s", mod, ", ".join(sorted(ports)))
         if not tasks:
             _log.error("No valid entries found in %s", args.file)
             return
@@ -384,7 +433,7 @@ def _run_strip(config: FPGAToolConfig, args, conf_path: str) -> None:
         if fpga_path is None:
             _log.error("fpga_v file not found: %s", hier_module)
             continue
-        n = strip_instances(fpga_path, instances, scanner)
+        n = strip_instances(fpga_path, instances, scanner, tie1_map)
         _log.info("Stripped %d instance(s) from %s", n, hier_module)
         total += n
 

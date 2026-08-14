@@ -58,17 +58,82 @@ module cppe_ram_wrap (
     input         dftrambyp_1,
     input         ret1n_1,
     output [1:0]  so_1,
-    output [38:0] q_1
-);
+    output [38:0] q_1,
+
+input         clk_2,
+input         cen_2,
+input         gwen_2,
+input  [12:0] a_2,
+input  [38:0] d_2,
+input  [2:0]  ema_2,
+input  [1:0]  emaw_2,
+input         emas_2,
+input         rdt_2,
+input         wabl_2,
+input  [2:0]  wablm_2,
+input         rawl_2,
+input  [1:0]  rawlm_2,
+input         stov_2,
+input         se_2,
+input  [1:0]  si_2,
+input         dftrambyp_2,
+input         ret1n_2,
+output [1:0]  so_2,
+output [38:0] q_2,
+
+input         clk_3,
+input         cen_3,
+input         gwen_3,
+input  [12:0] a_3,
+input  [38:0] d_3,
+input  [2:0]  ema_3,
+input  [1:0]  emaw_3,
+input         emas_3,
+input         rdt_3,
+input         wabl_3,
+input  [2:0]  wablm_3,
+input         rawl_3,
+input  [1:0]  rawlm_3,
+input         stov_3,
+input         se_3,
+input  [1:0]  si_3,
+input         dftrambyp_3,
+input         ret1n_3,
+output [1:0]  so_3,
+output [38:0] q_3,
+
+input wire ijtag_tck,
+input wire ijtag_reset,
+input wire ijtag_ce,
+input wire ijtag_se,
+input wire ijtag_ue,
+input wire ijtag_sel,
+input wire ijtag_si,
+output wire ijtag_so,
+input wire ltest_en,
+input wire memory_bypass_en,
+input wire mcp_bounding_en,
+input wire scan_en,
+
+output wire bisr_so,
+input wire bisr_si,
+input wire bisr_shift_en,
+input wire bisr_clk,
+input wire bisr_reset);
 
   // Default assignments (non-memory ports)
   assign sys_test_pass = 1'b0;
   assign sys_test_done = 1'b0;
   assign so_0 = {2{1'b0}};
   assign so_1 = {2{1'b0}};
+  assign so_2 = {2{1'b0}};
+  assign so_3 = {2{1'b0}};
+  assign ijtag_so = 1'b0;
+  assign bisr_so = 1'b0;
 
   // FPGA memory instantiations
 
+  wire [39:0] mem_rdata_0;
   fpga_spram #(
       .MEMDEPTH (8192),
       .MEMWIDTH (40),
@@ -82,9 +147,11 @@ module cppe_ram_wrap (
       .ram_me   (~cen_0),
       .ram_we   ({5{~gwen_0}}),
       .ram_wdata({{1{1'b0}}, d_0[38:0]}),
-      .ram_rdata({{1{1'b0}}, q_0[38:0]})
+      .ram_rdata(mem_rdata_0)
   );
+  assign q_0[38:0] = mem_rdata_0[38:0];
 
+  wire [39:0] mem_rdata_1;
   fpga_spram #(
       .MEMDEPTH (8192),
       .MEMWIDTH (40),
@@ -98,7 +165,44 @@ module cppe_ram_wrap (
       .ram_me   (~cen_1),
       .ram_we   ({5{~gwen_1}}),
       .ram_wdata({{1{1'b0}}, d_1[38:0]}),
-      .ram_rdata({{1{1'b0}}, q_1[38:0]})
+      .ram_rdata(mem_rdata_1)
   );
+  assign q_1[38:0] = mem_rdata_1[38:0];
+
+  wire [39:0] mem_rdata_2;
+  fpga_spram #(
+      .MEMDEPTH (8192),
+      .MEMWIDTH (40),
+      .BYTEWIDTH(8),
+      .ADDRWIDTH(13),
+      .MEMTYPE ("block" )
+  )
+  mem_2(
+      .ram_clk  (clk_2),
+      .ram_addr (a_2[12:0]),
+      .ram_me   (~cen_2),
+      .ram_we   ({5{~gwen_2}}),
+      .ram_wdata({{1{1'b0}}, d_2[38:0]}),
+      .ram_rdata(mem_rdata_2)
+  );
+  assign q_2[38:0] = mem_rdata_2[38:0];
+
+  wire [39:0] mem_rdata_3;
+  fpga_spram #(
+      .MEMDEPTH (8192),
+      .MEMWIDTH (40),
+      .BYTEWIDTH(8),
+      .ADDRWIDTH(13),
+      .MEMTYPE ("block" )
+  )
+  mem_3(
+      .ram_clk  (clk_3),
+      .ram_addr (a_3[12:0]),
+      .ram_me   (~cen_3),
+      .ram_we   ({5{~gwen_3}}),
+      .ram_wdata({{1{1'b0}}, d_3[38:0]}),
+      .ram_rdata(mem_rdata_3)
+  );
+  assign q_3[38:0] = mem_rdata_3[38:0];
 
 endmodule

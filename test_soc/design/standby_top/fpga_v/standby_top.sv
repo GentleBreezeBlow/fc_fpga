@@ -36,7 +36,6 @@ module standby_top (
   //===========================================================
   wire        iomux_clk;
   wire        cgm_clk_out;
-  wire [15:0] gpio_in, gpio_out, gpio_oe;
 
 `ifdef FPGA_SYN
   wire stby_clk_buf;

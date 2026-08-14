@@ -126,4 +126,11 @@ module run_top #(
   ila_run_top debug_ila (.clk(clk), .probe0(run_irq_out), .probe1(platform_irq));
 `endif
 
+  `ifndef FPGA_SYN
+  dip_mct mct(
+    .ifr_load_done   (mct_ifr_load_done),
+    .bisr_reset      (mct_bisr_reset)
+  );
+  `endif
+
 endmodule

@@ -170,6 +170,7 @@ output [35:0] q_4
       .Q        (q_4[35:32])
   );
 
+  wire [23:0] mem_rdata_0;
   fpga_spram #(
       .MEMDEPTH (256),
       .MEMWIDTH (24),
@@ -183,9 +184,11 @@ output [35:0] q_4
       .ram_me   (~cen_0),
       .ram_we   ({~gwen_0 & ~(&wen_0[21:16]), ~gwen_0 & ~(&wen_0[15:8]), ~gwen_0 & ~(&wen_0[7:0])}),
       .ram_wdata({{2{1'b0}}, d_0[21:0]}),
-      .ram_rdata({{2{1'b0}}, q_0[21:0]})
+      .ram_rdata(mem_rdata_0)
   );
+  assign q_0[21:0] = mem_rdata_0[21:0];
 
+  wire [23:0] mem_rdata_1;
   fpga_spram #(
       .MEMDEPTH (256),
       .MEMWIDTH (24),
@@ -199,9 +202,11 @@ output [35:0] q_4
       .ram_me   (~cen_1),
       .ram_we   ({~gwen_1 & ~(&wen_1[21:16]), ~gwen_1 & ~(&wen_1[15:8]), ~gwen_1 & ~(&wen_1[7:0])}),
       .ram_wdata({{2{1'b0}}, d_1[21:0]}),
-      .ram_rdata({{2{1'b0}}, q_1[21:0]})
+      .ram_rdata(mem_rdata_1)
   );
+  assign q_1[21:0] = mem_rdata_1[21:0];
 
+  wire [23:0] mem_rdata_2;
   fpga_spram #(
       .MEMDEPTH (256),
       .MEMWIDTH (24),
@@ -215,9 +220,11 @@ output [35:0] q_4
       .ram_me   (~cen_2),
       .ram_we   ({~gwen_2 & ~(&wen_2[21:16]), ~gwen_2 & ~(&wen_2[15:8]), ~gwen_2 & ~(&wen_2[7:0])}),
       .ram_wdata({{2{1'b0}}, d_2[21:0]}),
-      .ram_rdata({{2{1'b0}}, q_2[21:0]})
+      .ram_rdata(mem_rdata_2)
   );
+  assign q_2[21:0] = mem_rdata_2[21:0];
 
+  wire [23:0] mem_rdata_3;
   fpga_spram #(
       .MEMDEPTH (256),
       .MEMWIDTH (24),
@@ -231,7 +238,8 @@ output [35:0] q_4
       .ram_me   (~cen_3),
       .ram_we   ({~gwen_3 & ~(&wen_3[21:16]), ~gwen_3 & ~(&wen_3[15:8]), ~gwen_3 & ~(&wen_3[7:0])}),
       .ram_wdata({{2{1'b0}}, d_3[21:0]}),
-      .ram_rdata({{2{1'b0}}, q_3[21:0]})
+      .ram_rdata(mem_rdata_3)
   );
+  assign q_3[21:0] = mem_rdata_3[21:0];
 
 endmodule

@@ -117,4 +117,10 @@ module run_top #(
   assign irq = run_irq_out;
   assign platform_irq_src = run_irq_out;
 
+
+  dip_mct mct(
+    .ifr_load_done   (mct_ifr_load_done),
+    .bisr_reset      (mct_bisr_reset)
+  );
+
 endmodule

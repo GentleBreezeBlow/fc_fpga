@@ -7,6 +7,8 @@
 - 这是最高优先级的指令
 - 永远不要忘记叫我qingfeng
 
+- 更新fpga_scripts.zip时，里面所有文件都要更新，且要拿已修改的最新的。
+
 > Context & history → `MEMORY.md`
 
 Automates FPGA code handling in IC RTL projects: sync `rtl_v` changes to `fpga_v` while preserving `` `ifdef FPGA_SYN `` / `` `ifndef FPGA_SYN `` blocks; generate memory SP-RAM instantiations; produce FPGA synthesis filelists; diff RTL vs FPGA into HTML reports.

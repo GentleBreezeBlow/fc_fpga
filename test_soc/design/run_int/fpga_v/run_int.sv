@@ -3232,8 +3232,13 @@ ETHOSU65_1 #(
   .CLK          (clk),
   .nRESET       (rst_n),
   .nMBISTRESET  (u65_nmbistreset),
+`ifdef FPGA_SYN
+  .PORPL        (u65_porpl_fpga),
+  .PORSL        (u65_porsl_fpga),
+`else
   .PORPL        (u65_porpl),
   .PORSL        (u65_porsl),
+`endif
   .IRQ          (u65_irq),
   .CLKQACTIVE   (u65_clkqactive),
   .CLKREQn      (u65_clkreqn),
