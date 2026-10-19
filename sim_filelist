@@ -1,0 +1,10 @@
+add_files -fileset sim_1 -norecurse {$SOC_TB_DIR/fpga/sim_v/jtag_driver.sv $SOC_TB_DIR/fpga/sim_v/testbench.sv}
+set_property include_dirs {
+    xxxxxx \
+} [get_filesets sim_1]
+
+set_property top testbench [get_filesets sim_1]
+
+set_property XPM_LIBRARIES XPM_MEMORY [current_project]
+set_property STEPS.SYNTH_DESIGN.ARGS.GATED_CLOCK_CONVERSION on [get_runs synth_1]
+set_property STEPS.WRITE_BITSTREAM.ARGS.BIN_FILE true [get_runs impl_1]

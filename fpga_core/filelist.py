@@ -17,6 +17,7 @@ from .config import (
     FPGA_SET_PROPERTY,
     FPGA_SET_PROPERTY_SCE,
     FPGA_XDC_PROPERTY,
+    PARAM_PREFIX_DIRS,
     RE_VERILOG_EXT,
     SKIP_DIRS,
 )
@@ -166,14 +167,15 @@ def generate_filelist(
                     logger.error("  Missing from filelist: %s", full_path)
 
     # ---- Build final output -----------------------------------------------
-    header = _build_tcl_header(use_sce, extra_inc_dirs)
+    include_dirs = _collect_include_dirs(extra_inc_dirs)
+    header = _build_tcl_header(include_dirs)
 
     # Append user-defined extra Verilog files
     for extra_path in EXTRA_VERILOG_FILES:
         if extra_path not in lines:
             lines.append(extra_path)
 
-    # Comment out -makelib/-endlib directives; emit undef_<lib>.v after -endlib
+    # Comment out -makelib/-endlib directives
     lines = _transform_makelib_directives(lines)
 
     body = "\n".join(
@@ -189,6 +191,10 @@ def generate_filelist(
 
     output_path.write_text(output, encoding="utf-8")
     logger.info("Wrote FPGA filelist: %s (%d entries)", output_path, len(lines))
+
+    # ---- Generate sim_filelist (覆盖项目根 sim_filelist 模板) -------------
+    _generate_sim_filelist(include_dirs, Path("sim_filelist"))
+
     return output_path
 
 
@@ -234,28 +240,19 @@ def _read_source_filelist(
 
 
 def _transform_makelib_directives(lines: list[str]) -> list[str]:
-    """Comment out ``-makelib <name>`` / ``-endlib`` directives and emit
-    ``$SOC_TB_DIR/fpga/fpga_v/undef_<name>.v`` after each ``-endlib``.
+    """Comment out ``-makelib <name>`` / ``-endlib`` directives.
 
-    ``-makelib``/``-endlib`` may nest; the ``undef`` file is emitted for the
-    innermost library at each ``-endlib``.  Directives become ``# ...`` Tcl
-    comments so they are skipped by the FPGA tool while the library-bound
-    files between them are still compiled normally.
+    Directives become ``# ...`` Tcl comments so they are skipped by the FPGA
+    tool while the library-bound files between them are still compiled
+    normally.
     """
     result: list[str] = []
-    stack: list[str] = []
 
     for ln in lines:
         if ln.startswith("-makelib "):
-            lib = ln[len("-makelib "):].strip()
-            if lib:
-                stack.append(lib)
             result.append(f"# {ln}")
         elif ln.startswith("-endlib"):
             result.append(f"# {ln}")
-            if stack:
-                lib = stack.pop()
-                result.append(f"$SOC_TB_DIR/fpga/fpga_v/undef_{lib}.v")
         else:
             result.append(ln)
 
@@ -384,12 +381,8 @@ def _parse_source_include_dirs(path: Path) -> list[str]:
     return inc_dirs
 
 
-def _build_tcl_header(use_sce: bool, extra_include_dirs: list[str] | None = None) -> str:
-    """Build the ``set_property include_dirs`` Tcl header.
-
-    Merges static include directories with ``+incdir+`` / ``-y`` paths
-    extracted from the source filelist, without duplicates.
-    """
+def _collect_include_dirs(extra_include_dirs: list[str] | None = None) -> list[str]:
+    """合并 EXTRA_INCLUDE_DIRS 与 ``+incdir+``/``-y`` 提取目录，去重后应用 rtl→fpga 替换。"""
     dirs: list[str] = []
     seen: set[str] = set()
 
@@ -405,11 +398,53 @@ def _build_tcl_header(use_sce: bool, extra_include_dirs: list[str] | None = None
                 seen.add(d)
                 dirs.append(d)
 
+    # PARAM_PREFIX_DIRS 对应目录的参考目录 → fpga_v（prefix 后 include 改过的 fpga_v/.vh）
+    return _rtl_to_fpga_include_dirs(dirs)
+
+
+def _build_tcl_header(include_dirs: list[str]) -> str:
+    """Build the ``set_property include_dirs`` Tcl header."""
     lines = ["set_property include_dirs {"]
-    for d in dirs:
+    for d in include_dirs:
         lines.append(f"{d} \\")
     lines.append("} [current_fileset]")
     return "\n".join(lines)
+
+
+# 与 scanner.DesignScanner 的 reference_subdirs 一致：参考 RTL 目录可能叫这些名字
+_REF_SUBDIRS = ("rtl_v", "bhv_v", "src")
+
+
+def _ref_counterparts(fpga_dir: str) -> list[str]:
+    """``fpga_v`` 目录 → 同级的参考目录列表（rtl_v / bhv_v / src）。"""
+    s = fpga_dir.replace("\\", "/").rstrip("/")
+    if not s.endswith("/fpga_v"):
+        return []
+    parent = s[: -len("/fpga_v")]
+    return [f"{parent}/{sub}" for sub in _REF_SUBDIRS]
+
+
+def _rtl_to_fpga_include_dirs(dirs: list[str]) -> list[str]:
+    """把 include_dirs 里 PARAM_PREFIX_DIRS 对应目录的参考目录换成 fpga_v。
+
+    PARAM_PREFIX_DIRS 的 key 是 fpga_v 目录。对每个 key，把 include_dirs 里
+    同级的参考目录（rtl_v / bhv_v / src）替换成该 fpga_v 目录——prefix 改过的
+    是 fpga_v/.vh，综合时要 include fpga_v 而不是未改的参考目录。
+    """
+    if not PARAM_PREFIX_DIRS:
+        return dirs
+
+    result = list(dirs)
+    for fpga_dir in PARAM_PREFIX_DIRS:
+        for ref_dir in _ref_counterparts(fpga_dir):
+            for i, d in enumerate(result):
+                # 归一化到绝对路径比较，兼容 $VAR 与绝对路径混写
+                if (
+                    _expand_tcl_vars(d).replace("\\", "/").rstrip("/")
+                    == _expand_tcl_vars(ref_dir).replace("\\", "/").rstrip("/")
+                ):
+                    result[i] = fpga_dir
+    return result
 
 
 def _build_tcl_footer(use_sce: bool) -> str:
@@ -419,6 +454,32 @@ def _build_tcl_footer(use_sce: bool) -> str:
         parts.append(FPGA_SET_PROPERTY_SCE)
     parts.append(FPGA_XDC_PROPERTY)
     return "\n".join(parts)
+
+
+# sim_filelist 模板里 include_dirs 块： set_property include_dirs { ... } [get_filesets sim_1]
+_RE_SIM_INCLUDE_BLOCK = re.compile(
+    r"set_property include_dirs \{[\s\S]*?\} \[get_filesets sim_1\]"
+)
+
+
+def _generate_sim_filelist(include_dirs: list[str], path: Path) -> None:
+    """生成 sim_filelist：把模板里 include_dirs 块替换为 *include_dirs* 目录。
+
+    模板和输出是同一个文件 *path*（覆盖）。include_dirs 块按正则整体替换，
+    不依赖占位符，因此可重复生成（幂等）。目录最后展开成绝对路径，与 filelist.f 一致。
+    """
+    if not path.is_file():
+        logger.warning("sim_filelist template not found: %s -- skipping", path)
+        return
+
+    template = path.read_text(encoding="utf-8", errors="replace")
+    dir_lines = "\n".join(f"    {d} \\" for d in include_dirs)
+    block = "set_property include_dirs {\n" + dir_lines + "\n} [get_filesets sim_1]"
+
+    content = _RE_SIM_INCLUDE_BLOCK.sub(lambda _m: block, template)
+    content = _expand_tcl_vars(content)
+    path.write_text(content, encoding="utf-8")
+    logger.info("Wrote sim_filelist: %s", path)
 
 
 def _substitute_env_vars(text: str) -> str:

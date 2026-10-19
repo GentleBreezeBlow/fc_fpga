@@ -97,9 +97,10 @@ rtl_v/foo.sv                     fpga_v/foo.sv
 - `+incdir+xxx` 和 `-y xxx`（目录）自动提取到 `set_property include_dirs`，与 `EXTRA_INCLUDE_DIRS` 合并去重
 - `rtl_v` 路径替换为 `fpga_v` 路径（按文件名长度降序替换，`cppe_cache_wrap` 不会被 `cache_wrap` 误吞）
 - `mbist_wrap/rtl_v` 全部剔除，只保留 `mbist_wrap/fpga_v`
-- `-makelib xxx` / `-endlib` 指令注释掉（Tcl `#` 注释），并在每个 `-endlib` 后追加一行 `$SOC_TB_DIR/fpga/fpga_v/undef_xxx.v`（`xxx` 为对应 `-makelib` 的名字）
+- `-makelib xxx` / `-endlib` 指令注释掉（Tcl `#` 注释），库内的文件仍正常编译
 - `$VAR` / `${VAR}` 引用展开为绝对路径（`/` 分隔）
 - 末尾追加 Tcl property 和 xdc 约束文件（top 名 `fpga_top`，xdc 文件 `[string tolower ${PROJ_NAME}]_fpga_cons.xdc`）
+- 顺带生成 `sim_filelist`：读取项目根 `sim_filelist` 模板，把其中 `set_property include_dirs {...} [get_filesets sim_1]` 块的目录替换为与 filelist 相同的 include_dirs（覆盖原模板文件，可重复生成）
 
 ### 4. strip-ips — 剥离例化
 
@@ -194,6 +195,7 @@ PARAM_PREFIX_DIRS = {
 - 作用范围：仅配置目录（`fpga_v`）下的所有 `.vh`/`.v`/`.sv`，不碰 `rtl_v`
 - 引用形式全覆盖：`` `NAME`` / `` `NAME(x)`` / `` `ifdef NAME`` / `[NAME-1:0]` / 定义处本身
 - 幂等：已带前缀的名字跳过，重复运行不叠加
+- 联动 filelist：`PARAM_PREFIX_DIRS` 里配置的 `fpga_v` 目录，生成 filelist 时会把 `include_dirs` 里同级的参考目录（`rtl_v`/`bhv_v`/`src`）替换成 `fpga_v`，确保综合 include 到加过前缀的 `.vh`
 - `full` 流程在 sync → memory 之后、filelist 之前自动执行（`PARAM_PREFIX_DIRS` 非空时）
 
 ## 配置文件
