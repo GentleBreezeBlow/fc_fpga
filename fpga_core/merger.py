@@ -484,19 +484,23 @@ def _parse_ports_regex(lines: list[str]) -> set[str]:
 # Stub port synchronisation
 # ---------------------------------------------------------------------------
 
-def _extract_module_header(text: str) -> tuple[str, int, int] | None:
+def _extract_module_header(text: str, module_name: str | None = None) -> tuple[str, int, int] | None:
     """Extract the Verilog module header from ``module`` to ``);``.
 
     Handles optional ``#(...)`` parameter list and nested parentheses
-    in port dimensions.  Returns ``(header_text, start, end)`` or ``None``
-    if no module header is found.
+    in port dimensions.  If *module_name* is given, locate that specific
+    module (for files declaring multiple modules); otherwise the first
+    module is used.  Returns ``(header_text, start, end)`` or ``None``.
     """
-    m = re.search(r"\bmodule\b", text)
+    if module_name:
+        m = re.search(rf"\bmodule\s+{re.escape(module_name)}\b", text)
+    else:
+        m = re.search(r"\bmodule\b", text)
     if not m:
         return None
 
     start = m.start()
-    pos = m.end()
+    pos = start + len("module")
 
     def _skip_ws() -> None:
         nonlocal pos

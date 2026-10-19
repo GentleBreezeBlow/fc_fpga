@@ -110,7 +110,7 @@ def strip_instances(
         rtl_path = _find_module_rtl(module_name, scanner)
         outputs: set[str] = set()
         if rtl_path is not None:
-            outputs = _extract_module_outputs(rtl_path)
+            outputs = _extract_module_outputs(rtl_path, module_name)
 
         if not outputs:
             if rtl_path is None:
@@ -754,12 +754,14 @@ def _parse_port_connections(
 # Module output-port extraction
 # ===========================================================================
 
-def _extract_module_outputs(rtl_path: Path) -> set[str]:
+def _extract_module_outputs(rtl_path: Path, module_name: str | None = None) -> set[str]:
     """Parse *rtl_path* and return the set of output port names.
 
     Handles both ANSI-style ports (``module foo(input a, output b);``) and
     non-ANSI style (``module foo(a,b); output b;``) where port directions
     are declared after the ``);``.
+
+    *module_name* targets a specific module in a multi-module file.
     """
     text = rtl_path.read_text(encoding="utf-8", errors="replace")
 
@@ -767,7 +769,7 @@ def _extract_module_outputs(rtl_path: Path) -> set[str]:
     text = re.sub(r"//.*$", "", text, flags=re.MULTILINE)
     text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
 
-    header = _extract_module_header(text)
+    header = _extract_module_header(text, module_name)
     if header is None:
         logger.warning("Cannot parse module header in %s", rtl_path)
         logger.debug("  First 200 chars of %s:\n%s", rtl_path.name, text[:200])
@@ -1051,8 +1053,7 @@ def _find_module_rtl(
         for path in filelist_paths:
             try:
                 first = path.read_text(encoding="utf-8", errors="replace")[:2000]
-                m = _MODULE_RE.search(first)
-                if m:
+                for m in _MODULE_RE.finditer(first):
                     actual_name = m.group(1)
                     if actual_name not in _module_name_cache:
                         _module_name_cache[actual_name] = path
@@ -1072,8 +1073,7 @@ def _find_module_rtl(
         if path not in _module_name_cache.values():
             try:
                 first = path.read_text(encoding="utf-8", errors="replace")[:2000]
-                m = _MODULE_RE.search(first)
-                if m and m.group(1) == module_name:
+                if any(m.group(1) == module_name for m in _MODULE_RE.finditer(first)):
                     _module_name_cache[module_name] = path
                     return path
             except OSError:

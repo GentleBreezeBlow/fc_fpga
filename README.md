@@ -157,6 +157,7 @@ tie1 mct : ifr_load_done bisr_reset
 - **unstrip 双轮机制**：先清理 `` `ifdef FPGA_SYN `` 块（含 `else`），再清理 `` `ifndef FPGA_SYN `` 块（无 `else`），避免无输出模块重复包裹导致 `` `endif `` / `` `ifdef `` 连续出现
 - **通配符去重**：`eftu_mce_wrap` 同时被显式列举和 `eftu*` 匹配时自动去重，不会重复剥离
 - **filelist 优先的模块查找**：`_find_module_rtl` 三级优先级：① filelist 中文件的实际 `module` 名 → ② 文件名 stem → ③ 全量扫描。确保 `eftu_mce_top.sv`（filelist 列出，内部 `module eftu_top`）优先于目录遍历碰到的 `eftu_top.sv`
+- **多 module 文件**：模块查找（`finditer` 索引文件内所有 `module`）和端口解析（`_extract_module_header` 按目标 module 名定位）都支持一个文件声明多个 module 时精确剥离其中任意一个
 - **信号宽度解析防御**：`_signal_width` 在信号名含非法正则字符时安全返回 None，不崩溃
 - `full` 命令最后自动调用，无需手动执行
 
