@@ -6,14 +6,14 @@
 
 ```bash
 # 设好项目所需的环境变量，然后运行
-python fpga.py full             # 全流程：sync + compare + memory + filelist + strip-ips
+python fpga.py full             # 全流程：sync + compare + memory + prefix + filelist + strip-ips
 ```
 
 ## 命令一览
 
 | 命令 | 说明 |
 |------|------|
-| `full` | 完整流程：sync → compare → memory → filelist → strip-ips（自动读 `strip_ips.conf`） |
+| `full` | 完整流程：sync → compare → memory → prefix → filelist → strip-ips（prefix 仅当 `PARAM_PREFIX_DIRS` 非空时执行；strip-ips 自动读 `strip_ips.conf`） |
 | `sync [--no-compare]` | 同步 `fpga_v` ← `rtl_v`，`--no-compare` 跳过 diff report |
 | `memory` | 生成 `mbist_wrap/fpga_v/` 下的 FPGA SP-RAM 替换文件 |
 | `filelist` | 生成 Vivado 综合用的 `filelist.f` |
@@ -97,6 +97,7 @@ rtl_v/foo.sv                     fpga_v/foo.sv
 - `+incdir+xxx` 和 `-y xxx`（目录）自动提取到 `set_property include_dirs`，与 `EXTRA_INCLUDE_DIRS` 合并去重
 - `rtl_v` 路径替换为 `fpga_v` 路径（按文件名长度降序替换，`cppe_cache_wrap` 不会被 `cache_wrap` 误吞）
 - `mbist_wrap/rtl_v` 全部剔除，只保留 `mbist_wrap/fpga_v`
+- `-makelib xxx` / `-endlib` 指令注释掉（Tcl `#` 注释），并在每个 `-endlib` 后追加一行 `$SOC_TB_DIR/fpga/fpga_v/undef_xxx.v`（`xxx` 为对应 `-makelib` 的名字）
 - `$VAR` / `${VAR}` 引用展开为绝对路径（`/` 分隔）
 - 末尾追加 Tcl property 和 xdc 约束文件（top 名 `fpga_top`，xdc 文件 `[string tolower ${PROJ_NAME}]_fpga_cons.xdc`）
 
@@ -176,6 +177,25 @@ _HIER_MODULES: set[str] = {
 
 填什么路径就扫什么路径，不递归、不自动扩展。
 
+### 6. prefix — 宏/参数名前缀
+
+FPGA 综合时不同 IP 目录的 `.vh` 定义同名宏（`` `define``）或 `parameter`/`localparam`，被全局 include 后互相覆盖导致冲突。`prefix` 步骤对 `PARAM_PREFIX_DIRS` 里配置的每个 `fpga_v` 目录，把该目录下 `.vh` 定义的名字，在该目录所有 `.vh`/`.v`/`.sv` 里统一加上目录专属前缀。
+
+在 `fpga_core/config.py` 里配置：
+
+```python
+PARAM_PREFIX_DIRS = {
+    "$COMMON_IP_DIR/dip_hsm/fpga_v": "HSM_",
+    "$COMMON_IP_DIR/dip_sce/fpga_v": "SCE_",
+}
+```
+
+- 处理对象：`` `define`` 宏（含带参数宏 `` `define F(a,b)``）+ `parameter`/`localparam`
+- 作用范围：仅配置目录（`fpga_v`）下的所有 `.vh`/`.v`/`.sv`，不碰 `rtl_v`
+- 引用形式全覆盖：`` `NAME`` / `` `NAME(x)`` / `` `ifdef NAME`` / `[NAME-1:0]` / 定义处本身
+- 幂等：已带前缀的名字跳过，重复运行不叠加
+- `full` 流程在 sync → memory 之后、filelist 之前自动执行（`PARAM_PREFIX_DIRS` 非空时）
+
 ## 配置文件
 
 ### `strip_ips.conf`
@@ -193,6 +213,7 @@ _HIER_MODULES: set[str] = {
 | `MANUAL_PAIRS` | 手动指定 RTL ↔ FPGA 配对。FPGA 和 RTL 不在同一父目录时使用，syn c 自动同步（如 `{"HIRZER_0": {"fpga": "$SOC_TB_DIR/fpga/fpga_v/HIRZER_0.sv", "rtl": "$PLATFORM_DIR/ARM/CortexR52plus_0/rtl_v/HIRZER_0.sv"}}`） |
 | `STUB_IPS` | stub IP 列表，在列表里的 IP 会用 `stub_v` 替代 `rtl_v`（如 `["dip_sce", "dft_cggroup"]`） |
 | `EXTRA_INCLUDE_DIRS` | 追加到 `set_property include_dirs` 的目录（如 `["$CPPE_CPUSYSTEM_DIR/CORTEXM4/rtl_v"]`） |
+| `PARAM_PREFIX_DIRS` | 宏/参数名前缀目录映射 `{目录: 前缀}`（如 `{"$COMMON_IP_DIR/dip_hsm/fpga_v": "HSM_"}`），`full` 流程中给该目录下 `.vh` 定义的宏/参数名加前缀 |
 | `SKIP_DIRS` | 遍历时跳过的目录名（默认 `tool_data`） |
 | `ENV_TO_FILELIST_VAR` | 环境变量 → Tcl 变量映射 |
 
@@ -223,6 +244,7 @@ fpga_core/
 ├── merger.py                # diff + merge 核心，stub port 同步
 ├── memory.py                # memory port 提取 → SP-RAM / fpga_mem 生成
 ├── filelist.py              # filelist.f 生成
+├── prefixer.py              # .vh 宏/参数名前缀（解决跨 IP 同名冲突）
 ├── report.py                # bcompare / difflib HTML diff 报告
 └── stripper.py              # IP 例化剥离 + 输出 tie-off
 strip_ips.conf               # strip-ips 批量配置文件
