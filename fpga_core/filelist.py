@@ -173,7 +173,13 @@ def generate_filelist(
         if extra_path not in lines:
             lines.append(extra_path)
 
-    body = "\n".join(f"read_verilog -sv {ln}" for ln in lines)
+    # Comment out -makelib/-endlib directives; emit undef_<lib>.v after -endlib
+    lines = _transform_makelib_directives(lines)
+
+    body = "\n".join(
+        ln if ln.startswith("#") else f"read_verilog -sv {ln}"
+        for ln in lines
+    )
     footer = _build_tcl_footer(use_sce)
 
     output = f"{header}\n{body}\n{footer}\n"
@@ -225,6 +231,35 @@ def _read_source_filelist(
                     lines.append(full_path)
 
     return lines
+
+
+def _transform_makelib_directives(lines: list[str]) -> list[str]:
+    """Comment out ``-makelib <name>`` / ``-endlib`` directives and emit
+    ``$SOC_TB_DIR/fpga/fpga_v/undef_<name>.v`` after each ``-endlib``.
+
+    ``-makelib``/``-endlib`` may nest; the ``undef`` file is emitted for the
+    innermost library at each ``-endlib``.  Directives become ``# ...`` Tcl
+    comments so they are skipped by the FPGA tool while the library-bound
+    files between them are still compiled normally.
+    """
+    result: list[str] = []
+    stack: list[str] = []
+
+    for ln in lines:
+        if ln.startswith("-makelib "):
+            lib = ln[len("-makelib "):].strip()
+            if lib:
+                stack.append(lib)
+            result.append(f"# {ln}")
+        elif ln.startswith("-endlib"):
+            result.append(f"# {ln}")
+            if stack:
+                lib = stack.pop()
+                result.append(f"$SOC_TB_DIR/fpga/fpga_v/undef_{lib}.v")
+        else:
+            result.append(ln)
+
+    return result
 
 
 def _normalize_path(path: str) -> str:

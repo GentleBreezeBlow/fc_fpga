@@ -62,6 +62,14 @@ EXTRA_VERILOG_FILES: list[str] = [
     "$COMMON_IP_DIR/dip_hsm/rtl_v/rngm_params.vh",
 ]
 
+# =============================================================================
+# Parameter / macro prefix directories — 解决不同 IP 目录同名宏/参数冲突
+# key   = 要处理的 fpga_v 目录路径（$VAR 形式，会被展开成绝对路径）
+# value = 给该目录下 .vh 定义的宏名和 parameter/localparam 名加的前缀
+# 例： PARAM_PREFIX_DIRS = {"$COMMON_IP_DIR/dip_hsm/fpga_v": "HSM_"}
+# =============================================================================
+PARAM_PREFIX_DIRS: dict[str, str] = {}
+
 # ---------------------------------------------------------------------------
 # Environment-variable helpers
 # ---------------------------------------------------------------------------
@@ -164,7 +172,7 @@ MEM_PORT_PATTERNS: dict[str, re.Pattern] = {
 RE_STUB_SUFFIX = re.compile(r"_stub\b")
 
 # Directory names to exclude from design traversal (non-project build/tool dirs)
-SKIP_DIRS = frozenset({"tool_data"})
+SKIP_DIRS = frozenset({"tool_data", "lbist_ctrl"})
 
 
 # ---------------------------------------------------------------------------

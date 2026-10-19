@@ -31,7 +31,9 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 from fpga_core.config import (
     FPGAToolConfig, CYAN, GREEN, YELLOW, RED, BLUE, DIM, BOLD, RESET,
+    PARAM_PREFIX_DIRS,
 )
+from fpga_core.prefixer import apply_prefixes
 from fpga_core.block_extractor import FPGABlockExtractor
 from fpga_core.scanner import DesignScanner
 from fpga_core.merger import FileMerger, check_stub_ports, sync_stub_ports
@@ -547,6 +549,11 @@ def main(argv: list[str] | None = None) -> int:
             logger.info(">>> GENERATING MEMORY WRAPPERS <<<")
             mem_files = gen_memory_files(config)
             logger.info("Generated %d memory files", len(mem_files))
+
+        if args.command == "full" and PARAM_PREFIX_DIRS:
+            logger.info(">>> PREFIXING PARAM/MACRO NAMES <<<")
+            n_prefixed = apply_prefixes(PARAM_PREFIX_DIRS)
+            logger.info("Prefixed %d file(s)", n_prefixed)
 
         if args.command in ("full", "filelist"):
             logger.info(">>> GENERATING FILELIST <<<")

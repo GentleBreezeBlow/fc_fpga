@@ -6,8 +6,10 @@ $SOC_DESIGN_DIR/chip_top/rtl_v/chip_top.sv
 // IO pad
 $SOC_DESIGN_DIR/paring/rtl_v/paring.sv
 // Power domains
+-makelib rram64klib
 $SOC_DESIGN_DIR/standby_top/rtl_v/standby_top.sv
 $SOC_DESIGN_DIR/run_top/rtl_v/run_top.sv
+-endlib
 // IO mux
 $SOC_DESIGN_DIR/iomux_pd0/rtl_v/iomux_pd0.sv
 $SOC_DESIGN_DIR/iomux_pd1/rtl_v/iomux_pd1.sv
@@ -23,11 +25,13 @@ $SOC_DESIGN_DIR/mbist_wrap/rtl_v/cppe_flexcan_dma_pse_wrap.sv
 $SOC_DESIGN_DIR/mbist_wrap/rtl_v/cache_wrap.sv
 $SOC_DESIGN_DIR/mbist_wrap/rtl_v/cppe_cache_wrap.sv
 // Standby domain peripherals
+-makelib rram128klib
 $SOC_DESIGN_DIR/standby_int/rtl_v/standby_int.sv
 $SOC_DESIGN_DIR/standby_int/uart/rtl_v/uart_top.sv
 $SOC_DESIGN_DIR/standby_int/gpio/rtl_v/gpio.sv
 $SOC_DESIGN_DIR/standby_int/timer/rtl_v/timer.sv
 $SOC_DESIGN_DIR/standby_int/i2c_ctrl/rtl_v/i2c_ctrl.sv
+-endlib
 // Run domain peripherals
 $SOC_DESIGN_DIR/run_int/rtl_v/run_int.sv
 $SOC_DESIGN_DIR/run_int/cpu_core/rtl_v/cpu_core.sv
