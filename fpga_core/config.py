@@ -68,7 +68,10 @@ EXTRA_VERILOG_FILES: list[str] = [
 # value = 给该目录下 .vh 定义的宏名和 parameter/localparam 名加的前缀
 # 例： PARAM_PREFIX_DIRS = {"$COMMON_IP_DIR/dip_hsm/fpga_v": "HSM_"}
 # =============================================================================
-PARAM_PREFIX_DIRS: dict[str, str] = {}
+PARAM_PREFIX_DIRS: dict[str, str] = {
+    "$PLATFORM_DIR/ocm_rram_128k284/fpga_v" : "RRAM128K_",
+    "$PLATFORM_DIR/ocm_rram_64k153/fpga_v"  : "RRAM64K_",
+}
 
 # ---------------------------------------------------------------------------
 # Environment-variable helpers
