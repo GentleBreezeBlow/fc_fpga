@@ -1088,28 +1088,120 @@ def _find_module_rtl(
 
 _SIGNAL_DECL_RE_TEMPLATE = r"(?:input|output|inout|wire|reg|logic|tri)\s+(?:signed\s+)?\[([\w\-\+\*]+)\s*:\s*([\w\-\+\*]+)\]\s*\b{}\b"
 
+# Sized constant literal: <size>'<base><digits> (size optional, base b/o/d/h)
+_SIZED_CONST_RE = re.compile(r"^\s*(\d+)?\s*'[sS]?[bBoOdDhH]")
+# Replication: {N{expr}}
+_REPLICATION_RE = re.compile(r"^\s*(\d+)\s*\{(.+)\}\s*$", re.DOTALL)
+
+
+def _split_concat(inner: str) -> list[str]:
+    """Split a ``{...}`` body into top-level comma-separated elements.
+
+    Commas inside nested ``{}`` (replications / nested concats) are ignored.
+    """
+    parts: list[str] = []
+    depth = 0
+    cur: list[str] = []
+    for ch in inner:
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append("".join(cur).strip())
+            cur = []
+        else:
+            cur.append(ch)
+    if cur:
+        parts.append("".join(cur).strip())
+    return parts
+
+
+def _declared_width(name: str, text: str) -> int | None:
+    """Return the declared bit-width of *name* (``[7:0]`` -> 8), or ``None``
+    when the declaration is absent or uses non-numeric bounds."""
+    name = name.strip()
+    try:
+        pattern = re.compile(_SIGNAL_DECL_RE_TEMPLATE.format(re.escape(name)))
+    except re.error:
+        return None
+    m = pattern.search(text)
+    if not m:
+        return None
+    try:
+        msb = int(m.group(1))
+        lsb = int(m.group(2))
+    except ValueError:
+        return None
+    if lsb == 0:
+        return msb + 1
+    return abs(msb - lsb) + 1
+
+
+def _expr_width(expr: str, text: str) -> int | None:
+    """Recursively determine the bit-width of a port-connection expression.
+
+    Handles concatenations ``{a, b}`` (sum of element widths), replications
+    ``{N{a}}``, sized constants ``N'b...``, bit/part selects ``a[i]`` /
+    ``a[msb:lsb]`` and plain identifiers (looked up in *text*).
+    """
+    expr = expr.strip()
+    if not expr:
+        return None
+
+    # Replication: {N{expr}} -- N copies, so width = N * width(expr)
+    if expr.startswith("{") and expr.endswith("}"):
+        inner = expr[1:-1].strip()
+        m = _REPLICATION_RE.match(inner)
+        if m:
+            # Whole signal is a braced replication, e.g. {3{sig}}
+            sub = _expr_width(m.group(2).strip(), text)
+            return int(m.group(1)) * (1 if sub is None else sub)
+
+    m = _REPLICATION_RE.match(expr)
+    if m:
+        # Unbraced replication element, e.g. 3{sig} inside a concat
+        sub = _expr_width(m.group(2).strip(), text)
+        return int(m.group(1)) * (1 if sub is None else sub)
+
+    # Concatenation
+    if expr.startswith("{") and expr.endswith("}"):
+        total = 0
+        for elem in _split_concat(expr[1:-1]):
+            w = _expr_width(elem, text)
+            total += 1 if w is None else w
+        return total
+
+    # Sized constant literal
+    m = _SIZED_CONST_RE.match(expr)
+    if m:
+        size = m.group(1)
+        return int(size) if size else 1
+
+    # Bit/part select: name[msb:lsb] or name[i]
+    m = re.match(r"^(\w+)\s*\[([^\]]*)\]\s*$", expr)
+    if m:
+        sel = m.group(2).strip()
+        if ":" in sel:
+            msb_s, lsb_s = sel.split(":", 1)
+            try:
+                msb = int(msb_s.strip())
+                lsb = int(lsb_s.strip())
+            except ValueError:
+                return None
+            return abs(msb - lsb) + 1
+        return 1
+
+    # Plain identifier -- look up its declaration
+    return _declared_width(expr, text)
+
 
 def _signal_width(signal: str, text: str) -> int | None:
     """Try to determine the width of *signal* from its declaration.
 
     Returns the bit-width (e.g. 8), or ``None`` if not determinable.
     """
-    base = re.sub(r"\[.*\]", "", signal)
-    try:
-        pattern = re.compile(_SIGNAL_DECL_RE_TEMPLATE.format(re.escape(base)))
-    except re.error:
-        return None
-    m = pattern.search(text)
-    if m:
-        try:
-            msb = int(m.group(1))
-            lsb = int(m.group(2))
-            if lsb == 0:
-                return msb + 1
-            return abs(msb - lsb) + 1
-        except ValueError:
-            return None
-    return None  # 1-bit
+    return _expr_width(signal, text)
 
 
 def _indent_of(text: str, pos: int) -> str:

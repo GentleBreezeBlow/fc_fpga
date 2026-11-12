@@ -147,6 +147,16 @@ tie1 mct : ifr_load_done bisr_reset
 | `_b` / `ready` / `READY` 结尾端口 | `1'b1` | `{N{1'b1}}` |
 | `tie1` 指定端口 | `1'b1` | `{N{1'b1}}` |
 
+多-bit 端口的位宽 `N` 由 `_signal_width` 自动解析，支持：
+
+- **拼接** `{a, b}` — 各位宽之和。如 `.test({sig1, sig2})`（`sig1`/`sig2` 各 1-bit）→ `{2{1'b1}}`（即 `2'b11`）
+- **复制** `{N{a}}` — `N × a 位宽`
+- **位/段选** `a[i]`（1-bit）/ `a[msb:lsb]`（`|msb-lsb|+1`）
+- **定宽常量** `N'b...` / `N'h...` — `N` 位
+- **普通信号** — 从声明 `[msb:lsb]` 反查；无法确定时按 1-bit 兜底
+
+这样参数化端口（如 `output [AA-1:0] test`）外层用拼接例化时，tie-1 也能生成正确位宽，不会被低估成 `1'b1`。
+
 #### 运行机制
 
 - **unstrip-all 再 re-strip**：每次运行先恢复所有由本工具剥离（`ifdef` 分支仅含 `assign` tie-off）的例化，再根据当前 config 重新剥离。原生 RTL 的 `ifdef FPGA_SYN`（含 wire / 子例化等结构代码）不会被误恢复。这样 tie-off 格式变更、端口增减、`_b` 检测修正全部自动生效
@@ -158,7 +168,7 @@ tie1 mct : ifr_load_done bisr_reset
 - **通配符去重**：`eftu_mce_wrap` 同时被显式列举和 `eftu*` 匹配时自动去重，不会重复剥离
 - **filelist 优先的模块查找**：`_find_module_rtl` 三级优先级：① filelist 中文件的实际 `module` 名 → ② 文件名 stem → ③ 全量扫描。确保 `eftu_mce_top.sv`（filelist 列出，内部 `module eftu_top`）优先于目录遍历碰到的 `eftu_top.sv`
 - **多 module 文件**：模块查找（`finditer` 索引文件内所有 `module`）和端口解析（`_extract_module_header` 按目标 module 名定位）都支持一个文件声明多个 module 时精确剥离其中任意一个
-- **信号宽度解析防御**：`_signal_width` 在信号名含非法正则字符时安全返回 None，不崩溃
+- **信号宽度解析**：`_signal_width` 递归计算连接表达式位宽（拼接求和、复制 `{N{..}}`、位/段选、定宽常量、声明查找），信号名含非法正则字符时安全返回 None 不崩溃；无法确定的元素按 1-bit 兜底
 - `full` 命令最后自动调用，无需手动执行
 
 ### 5. list-ips — 列出层级 IP
